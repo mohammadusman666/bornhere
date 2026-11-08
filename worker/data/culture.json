@@ -1,0 +1,17 @@
+{
+  "1969": {"film": "Butch Cassidy and the Sundance Kid", "generation": "Generation X cusp / late Boomer", "note": "Apollo fever and protest anthems defined the air."},
+  "1977": {"film": "Star Wars", "generation": "Generation X", "note": "Blockbuster cinema and disco nights."},
+  "1980": {"film": "The Empire Strikes Back", "generation": "Generation X", "note": "Arcade glow and new-wave radio."},
+  "1985": {"film": "Back to the Future", "generation": "Millennial cusp / Gen X", "note": "Synth-pop and suburban VHS nights."},
+  "1989": {"film": "Batman", "generation": "Millennials", "note": "Walls falling and Walkmans everywhere."},
+  "1990": {"film": "Home Alone", "generation": "Millennials", "note": "Early internet whispers and Saturday cartoons."},
+  "1995": {"film": "Toy Story", "generation": "Millennials", "note": "Dial-up beginnings and CGI firsts."},
+  "1997": {"film": "Titanic", "generation": "Millennials", "note": "Boy bands warming up; the web leaving campus."},
+  "2000": {"film": "Gladiator", "generation": "Millennials", "note": "Y2K anxiety melting into a new century."},
+  "2005": {"film": "Harry Potter and the Goblet of Fire", "generation": "Millennials / Gen Z cusp", "note": "MySpace profiles and flip phones."},
+  "2010": {"film": "Toy Story 3", "generation": "Generation Z", "note": "Instagram’s first summer and smartphone ubiquity."},
+  "2015": {"film": "Star Wars: The Force Awakens", "generation": "Generation Z", "note": "Streaming wars and meme fluency."},
+  "2017": {"film": "Star Wars: The Last Jedi", "generation": "Generation Z", "note": "Always-on feeds and shared screens."},
+  "2020": {"film": "Nomadland", "generation": "Generation Alpha cusp", "note": "A quieter world, suddenly indoors."},
+  "2024": {"film": "Wicked", "generation": "Generation Alpha", "note": "AI tools and short-form everything."}
+}

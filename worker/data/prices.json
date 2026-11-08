@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "source": "US BLS / Census / USPS historical snapshots (bundled estimates)",
+    "note": "Nearest yearly reading; not exact daily prices."
+  },
+  "years": {
+    "1960": {"bread": 0.20, "gas": 0.31, "stamp": 0.04, "wage": 1.00, "house": 12650, "cpi": 29.6},
+    "1969": {"bread": 0.23, "gas": 0.35, "stamp": 0.06, "wage": 1.30, "house": 25700, "cpi": 36.7},
+    "1975": {"bread": 0.36, "gas": 0.57, "stamp": 0.10, "wage": 2.10, "house": 39300, "cpi": 53.8},
+    "1980": {"bread": 0.51, "gas": 1.19, "stamp": 0.15, "wage": 3.10, "house": 64700, "cpi": 82.4},
+    "1985": {"bread": 0.55, "gas": 1.12, "stamp": 0.22, "wage": 3.35, "house": 84300, "cpi": 107.6},
+    "1989": {"bread": 0.66, "gas": 1.00, "stamp": 0.25, "wage": 3.35, "house": 120000, "cpi": 124.0},
+    "1990": {"bread": 0.70, "gas": 1.16, "stamp": 0.25, "wage": 3.80, "house": 122900, "cpi": 130.7},
+    "1995": {"bread": 0.78, "gas": 1.15, "stamp": 0.32, "wage": 4.25, "house": 133900, "cpi": 152.4},
+    "1997": {"bread": 0.87, "gas": 1.23, "stamp": 0.32, "wage": 5.15, "house": 146000, "cpi": 160.5},
+    "2000": {"bread": 0.99, "gas": 1.51, "stamp": 0.33, "wage": 5.15, "house": 169000, "cpi": 172.2},
+    "2005": {"bread": 1.20, "gas": 2.30, "stamp": 0.37, "wage": 5.15, "house": 240900, "cpi": 195.3},
+    "2010": {"bread": 1.41, "gas": 2.79, "stamp": 0.44, "wage": 7.25, "house": 221800, "cpi": 218.1},
+    "2015": {"bread": 1.44, "gas": 2.45, "stamp": 0.49, "wage": 7.25, "house": 294000, "cpi": 237.0},
+    "2017": {"bread": 1.34, "gas": 2.53, "stamp": 0.49, "wage": 7.25, "house": 323100, "cpi": 245.1},
+    "2020": {"bread": 1.52, "gas": 2.17, "stamp": 0.55, "wage": 7.25, "house": 336900, "cpi": 258.8},
+    "2024": {"bread": 1.98, "gas": 3.30, "stamp": 0.73, "wage": 7.25, "house": 412300, "cpi": 314.4},
+    "2025": {"bread": 2.02, "gas": 3.20, "stamp": 0.73, "wage": 7.25, "house": 420000, "cpi": 320.0}
+  },
+  "currentYear": 2025
+}
