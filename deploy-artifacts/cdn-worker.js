@@ -9173,8 +9173,19 @@ app.all("*", async (c) => {
 // \0virtual:cloudflare/worker-entry
 var worker_entry_default = app ?? {};
 
-const __CDN_BASE__ = "https://cdn.jsdelivr.net/gh/mohammadusman666/bornhere@1b32340d2ed38b6f0edd914e76a9d00983a563ea/deploy-artifacts/client";
+const __CDN_BASE__ = "https://cdn.jsdelivr.net/gh/mohammadusman666/bornhere@804fa24f3ba94c930cc9dc733678d2465871afa0/deploy-artifacts/client";
 const __app__ = worker_entry_default;
+function __ctype__(pathname) {
+  if (pathname.endsWith('.html') || pathname === '/' || pathname === '') return 'text/html; charset=utf-8';
+  if (pathname.endsWith('.js')) return 'application/javascript; charset=utf-8';
+  if (pathname.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (pathname.endsWith('.svg')) return 'image/svg+xml';
+  if (pathname.endsWith('.json')) return 'application/json';
+  if (pathname.endsWith('.png')) return 'image/png';
+  if (pathname.endsWith('.ico')) return 'image/x-icon';
+  if (pathname.endsWith('.woff2')) return 'font/woff2';
+  return null;
+}
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -9188,6 +9199,8 @@ export default {
       });
       if (upstream.ok) {
         const headers = new Headers(upstream.headers);
+        const ct = __ctype__(assetPath);
+        if (ct) headers.set('content-type', ct);
         headers.set(
           'cache-control',
           assetPath.startsWith('/assets/')

@@ -18,6 +18,17 @@ code = code.replace(
   `
 const __CDN_BASE__ = ${JSON.stringify(CDN)};
 const __app__ = worker_entry_default;
+function __ctype__(pathname) {
+  if (pathname.endsWith('.html') || pathname === '/' || pathname === '') return 'text/html; charset=utf-8';
+  if (pathname.endsWith('.js')) return 'application/javascript; charset=utf-8';
+  if (pathname.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (pathname.endsWith('.svg')) return 'image/svg+xml';
+  if (pathname.endsWith('.json')) return 'application/json';
+  if (pathname.endsWith('.png')) return 'image/png';
+  if (pathname.endsWith('.ico')) return 'image/x-icon';
+  if (pathname.endsWith('.woff2')) return 'font/woff2';
+  return null;
+}
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -31,6 +42,8 @@ export default {
       });
       if (upstream.ok) {
         const headers = new Headers(upstream.headers);
+        const ct = __ctype__(assetPath);
+        if (ct) headers.set('content-type', ct);
         headers.set(
           'cache-control',
           assetPath.startsWith('/assets/')
