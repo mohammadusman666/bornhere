@@ -12,6 +12,7 @@ export type ChapterId =
   | 'headlines'
   | 'twins'
   | 'market'
+  | 'film'
   | 'culture'
   | 'nasa'
   | 'certificate'
@@ -104,11 +105,18 @@ export const CHAPTERS: ChapterDef[] = [
     teaser: 'What $1,000 in the S&P 500 would be worth today.',
   },
   {
+    id: 'film',
+    access: 'free',
+    label: 'The Big Screen',
+    title: 'The year’s biggest screens',
+    teaser: 'The US box-office leader the year you arrived.',
+  },
+  {
     id: 'culture',
     access: 'free',
     label: 'The Day, Made Yours',
     title: 'The world of your birth year',
-    teaser: 'Films, generation and the texture of your year.',
+    teaser: 'Generation, zodiac and the texture of your year.',
   },
   {
     id: 'nasa',

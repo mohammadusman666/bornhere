@@ -1,5 +1,6 @@
 import billboard from '../data/billboard.json'
 import birthsPopulation from '../data/births-population.json'
+import films from '../data/films.json'
 import prices from '../data/prices.json'
 import stars from '../data/stars.json'
 import market from '../data/market.json'
@@ -115,6 +116,55 @@ export function lookupCulture(year: number) {
   const keys = yearKeys(map)
   const key = nearestYear(year, keys)
   return { year: key, ...map[String(key)] }
+}
+
+type FilmYearRow = {
+  title: string
+  market: string
+  metric: string
+  estimated: boolean
+}
+
+type FilmsDataset = {
+  source: string
+  notes: string
+  coverage: { minYear: number; maxYear: number }
+  byYear: Record<string, FilmYearRow>
+}
+
+const FILMS = films as FilmsDataset
+
+/** US domestic calendar-year box-office #1 (BOM 1977+; estimated earlier). */
+export function lookupFilm(year: number) {
+  const { minYear, maxYear } = FILMS.coverage
+  const clamped = Math.min(maxYear, Math.max(minYear, year))
+  const row = FILMS.byYear[String(clamped)]
+  if (!row) {
+    return {
+      year,
+      dataYear: null as number | null,
+      clamped: false,
+      title: null as string | null,
+      market: null as string | null,
+      metric: null as string | null,
+      estimated: false,
+      source: FILMS.source,
+      notes: FILMS.notes,
+      coverage: FILMS.coverage,
+    }
+  }
+  return {
+    year,
+    dataYear: clamped,
+    clamped: clamped !== year,
+    title: row.title,
+    market: row.market,
+    metric: row.metric,
+    estimated: row.estimated,
+    source: FILMS.source,
+    notes: FILMS.notes,
+    coverage: FILMS.coverage,
+  }
 }
 
 const ZODIAC = [

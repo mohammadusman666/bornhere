@@ -257,9 +257,34 @@ export function AllChapters({ story }: { story: StoryPayload }) {
         )}
       </ChapterShell>
 
+      <ChapterShell id="film">
+        {c.film.title ? (
+          <>
+            <p className="font-display text-3xl text-[var(--color-amber-soft)] md:text-4xl">
+              {c.film.title}
+            </p>
+            <p className="mt-2 text-lg text-[var(--color-cream)]">
+              topped {c.film.market} screens in {c.film.dataYear}
+            </p>
+            <p className="mt-4 text-sm leading-relaxed text-[var(--color-mist)]">
+              {c.film.metric}
+              {c.film.estimated ? ' (pre–Box Office Mojo era; historical estimate)' : ''}
+              {c.film.clamped
+                ? ` · nearest chart year for ${c.film.year}`
+                : ''}
+              . Calendar-year leaders can differ from a film’s lifetime ranking — a keepsake
+              snapshot of what filled theaters that year, not a month-by-month chart.
+            </p>
+          </>
+        ) : (
+          <Missing>
+            {`No yearly box-office leader is in our snapshot for this year (${c.film.coverage.minYear}–${c.film.coverage.maxYear}).`}
+          </Missing>
+        )}
+      </ChapterShell>
+
       <ChapterShell id="culture">
         <div className="grid gap-4 sm:grid-cols-2">
-          <Stat label="Top film of era" value={c.culture.film} />
           <Stat label="Generation" value={c.culture.generation} />
           <Stat label="Western zodiac" value={c.culture.westernZodiac} />
           <Stat label="Chinese zodiac" value={c.culture.chineseZodiac} />
@@ -383,6 +408,11 @@ function Certificate({ story }: { story: StoryPayload }) {
           <p>
             Born with you: about {formatNumber(c.births.dailyBirths)} people that day · world
             population {formatNumber(c.births.worldPopulation ?? 0)}
+          </p>
+        )}
+        {c.film.title && (
+          <p>
+            The screen: {c.film.title} ({c.film.dataYear})
           </p>
         )}
         {c.song && (
