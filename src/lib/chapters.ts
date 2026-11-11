@@ -33,7 +33,7 @@ export const CHAPTERS: ChapterDef[] = [
     access: 'free',
     label: 'The Sky',
     title: 'The sky overhead',
-    teaser: 'Moon, sunrise and sunset on your day.',
+    teaser: 'Moon, sunrise, sunset, and how long the day was.',
   },
   {
     id: 'starmap',

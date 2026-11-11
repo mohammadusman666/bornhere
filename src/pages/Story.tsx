@@ -173,6 +173,9 @@ export function Story() {
             </h1>
             <p className="mt-3 text-sm text-[var(--color-mist)]">
               {story.chapters.sky.moonPhase} · {story.chapters.sky.illuminationPct}% illuminated
+              {story.chapters.sky.daylightLabel
+                ? ` · ${story.chapters.sky.daylightLabel} day`
+                : ''}
             </p>
             <p className="mt-6 text-[var(--color-mist)]">
               {gift

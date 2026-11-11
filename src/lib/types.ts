@@ -18,6 +18,10 @@ export type StoryPayload = {
       illuminationPct: number
       sunrise: string | null
       sunset: string | null
+      daylightHours: number | null
+      daylightLabel: string | null
+      season: string | null
+      seasonNote: string | null
     }
     weather: {
       highC: number | null
