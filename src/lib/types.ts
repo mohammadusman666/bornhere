@@ -106,6 +106,18 @@ export type StoryPayload = {
       thenGoldYear: number | null
       goldValue: number | null
     }
+    film: {
+      year: number
+      dataYear: number | null
+      clamped: boolean
+      title: string | null
+      market: string | null
+      metric: string | null
+      estimated: boolean
+      source: string
+      notes: string
+      coverage: { minYear: number; maxYear: number }
+    }
     culture: {
       year: number
       film: string
