@@ -39,7 +39,12 @@ export function Home() {
         <Link to="/" className="font-display text-2xl tracking-tight">
           Arrive<span className="text-[var(--color-amber)]">day</span>
         </Link>
-        <p className="hidden text-sm text-[var(--color-mist)] sm:block">Free to start · No account</p>
+        <div className="flex items-center gap-3 text-sm">
+          <Link to="/gift" className="text-[var(--color-amber-soft)]">
+            Gift a day
+          </Link>
+          <p className="hidden text-[var(--color-mist)] sm:block">Free to start · No account</p>
+        </div>
       </header>
 
       <main className="relative z-10 mx-auto grid w-full max-w-5xl gap-10 px-5 pt-10 pb-20 md:grid-cols-[1.1fr_0.9fr] md:pt-16">
@@ -102,7 +107,8 @@ export function Home() {
               See my day
             </button>
             <p className="text-xs text-[var(--color-mist)]">
-              Free full story. Chapters are ready for a future paywall — unlocked for now.
+              Free openers always. Sealed chapters unlock with a digital keepsake ($6.99) or gift
+              ($9.99) — payments stubbed until wired.
             </p>
           </form>
         </motion.div>

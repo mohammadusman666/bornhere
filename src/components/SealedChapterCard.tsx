@@ -35,13 +35,12 @@ export function SealedChapterCard({ chapter, teaserLine, children }: Props) {
         </div>
       </div>
 
-      <button
-        type="button"
-        className="mt-4 inline-flex items-center gap-2 rounded-full border border-[var(--color-line)] px-3.5 py-1.5 text-xs text-[var(--color-mist)]"
-        disabled
+      <a
+        href="#keepsake"
+        className="mt-4 inline-flex items-center gap-2 rounded-full border border-[var(--color-amber)]/45 px-3.5 py-1.5 text-xs text-[var(--color-amber-soft)]"
       >
-        Expand preview
-      </button>
+        Unlock with keepsake or gift
+      </a>
     </article>
   )
 }
