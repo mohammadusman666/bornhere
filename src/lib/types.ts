@@ -60,6 +60,17 @@ export type StoryPayload = {
       heartbeats: number
       fullMoons: number
     }
+    births: {
+      year: number
+      dataYear: number | null
+      clamped: boolean
+      dailyBirths: number | null
+      annualBirths: number | null
+      worldPopulation: number | null
+      source: string
+      notes: string
+      coverage: { minYear: number; maxYear: number }
+    }
     starmap: {
       stars: { x: number; y: number; mag: number }[]
       lines: [number, number][][]

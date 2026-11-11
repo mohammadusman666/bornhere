@@ -124,6 +124,42 @@ export function AllChapters({ story }: { story: StoryPayload }) {
         </div>
       </ChapterShell>
 
+      <ChapterShell id="births">
+        {c.births.dailyBirths != null ? (
+          <>
+            <p className="font-display text-4xl text-[var(--color-amber-soft)] md:text-5xl">
+              ~{formatNumber(c.births.dailyBirths)}
+            </p>
+            <p className="mt-2 text-lg text-[var(--color-cream)]">
+              people likely shared {who === 'You' ? 'your' : `${who}'s`} first day
+            </p>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              <Stat
+                label={`World births in ${c.births.dataYear}`}
+                value={formatNumber(c.births.annualBirths ?? 0)}
+              />
+              <Stat
+                label="World population (1 July)"
+                value={formatNumber(c.births.worldPopulation ?? 0)}
+              />
+            </div>
+            <p className="mt-4 text-sm leading-relaxed text-[var(--color-mist)]">
+              About {formatNumber(c.births.dailyBirths)} babies a day worldwide in{' '}
+              {c.births.dataYear}
+              {c.births.clamped
+                ? ` (nearest UN estimate year for ${c.births.year})`
+                : ''}
+              — annual live births ÷ 365.25 from UN World Population Prospects. A modeled
+              average, not a civil register for that exact calendar day.
+            </p>
+          </>
+        ) : (
+          <Missing>
+            {`World birth and population estimates for this year aren’t in our UN WPP snapshot yet (${c.births.coverage.minYear}–${c.births.coverage.maxYear}).`}
+          </Missing>
+        )}
+      </ChapterShell>
+
       <ChapterShell
         id="star"
         teaserLine={`${who} is about ${ageYears} — meet a star roughly that many light-years away.`}
@@ -343,6 +379,12 @@ function Certificate({ story }: { story: StoryPayload }) {
       </div>
       <div className="mx-auto mt-6 grid max-w-md gap-2 text-sm text-[var(--color-cream)]/90">
         <p>The sky: {c.sky.moonPhase}, {c.sky.illuminationPct}% lit</p>
+        {c.births.dailyBirths != null && (
+          <p>
+            Born with you: about {formatNumber(c.births.dailyBirths)} people that day · world
+            population {formatNumber(c.births.worldPopulation ?? 0)}
+          </p>
+        )}
         {c.song && (
           <p>
             The song: {c.song.title} — {c.song.artist}

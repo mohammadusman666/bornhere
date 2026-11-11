@@ -1,4 +1,5 @@
 import billboard from '../data/billboard.json'
+import birthsPopulation from '../data/births-population.json'
 import prices from '../data/prices.json'
 import stars from '../data/stars.json'
 import market from '../data/market.json'
@@ -196,5 +197,51 @@ export function lifeNumbers(date: string, now = new Date()) {
     orbits: Number(ageExact.toFixed(2)),
     heartbeats: Math.round(days * 24 * 60 * 70),
     fullMoons: Math.round(days / 29.530588),
+  }
+}
+
+type BirthsYearRow = {
+  births: number
+  population: number
+  dailyBirths: number
+}
+
+type BirthsPopulationDataset = {
+  source: string
+  notes: string
+  coverage: { minYear: number; maxYear: number }
+  byYear: Record<string, BirthsYearRow>
+}
+
+const BIRTHS_POP = birthsPopulation as BirthsPopulationDataset
+
+/** UN WPP world births + mid-year population for the birth year (1950–2023). */
+export function lookupBirths(year: number) {
+  const { minYear, maxYear } = BIRTHS_POP.coverage
+  const clamped = Math.min(maxYear, Math.max(minYear, year))
+  const row = BIRTHS_POP.byYear[String(clamped)]
+  if (!row) {
+    return {
+      year,
+      dataYear: null as number | null,
+      clamped: false,
+      dailyBirths: null as number | null,
+      annualBirths: null as number | null,
+      worldPopulation: null as number | null,
+      source: BIRTHS_POP.source,
+      notes: BIRTHS_POP.notes,
+      coverage: BIRTHS_POP.coverage,
+    }
+  }
+  return {
+    year,
+    dataYear: clamped,
+    clamped: clamped !== year,
+    dailyBirths: row.dailyBirths,
+    annualBirths: row.births,
+    worldPopulation: row.population,
+    source: BIRTHS_POP.source,
+    notes: BIRTHS_POP.notes,
+    coverage: BIRTHS_POP.coverage,
   }
 }

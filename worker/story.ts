@@ -2,6 +2,7 @@ import { computeSky } from './lib/astro'
 import {
   birthMeta,
   lifeNumbers,
+  lookupBirths,
   lookupCulture,
   lookupMarket,
   lookupPrices,
@@ -33,6 +34,7 @@ export type StoryPayload = {
     }) | null
     prices: ReturnType<typeof lookupPrices>
     life: ReturnType<typeof lifeNumbers>
+    births: ReturnType<typeof lookupBirths>
     starmap: ReturnType<typeof computeStarMap>
     star: ReturnType<typeof lookupStar>
     headlines: { title: string; year?: number; url?: string }[]
@@ -377,6 +379,7 @@ export async function buildStory(opts: {
       song: song ? { ...song, ...itunes } : null,
       prices: lookupPrices(y),
       life: lifeNumbers(opts.date),
+      births: lookupBirths(y),
       starmap: computeStarMap({
         date: opts.date,
         time: opts.time,
@@ -396,6 +399,7 @@ export async function buildStory(opts: {
       'Astronomy Engine',
       'Yale Bright Star Catalogue (via d3-celestial)',
       'IAU constellation figures',
+      'UN World Population Prospects 2024 (via Our World in Data)',
       'Billboard Hot 100 (bundled chart dates)',
       'US price/CPI snapshots',
       'Wikipedia On This Day',
