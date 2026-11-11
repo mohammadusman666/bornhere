@@ -16,8 +16,22 @@ export function AllChapters({ story }: { story: StoryPayload }) {
           <Stat label="Illuminated" value={`${c.sky.illuminationPct}%`} />
           <Stat label="Sunrise" value={c.sky.sunrise || '—'} />
           <Stat label="Sunset" value={c.sky.sunset || '—'} />
+          <Stat
+            label="Daylight"
+            value={
+              c.sky.daylightHours != null
+                ? `${formatNumber(c.sky.daylightHours, 1)} hours`
+                : '—'
+            }
+          />
+          <Stat label="Season" value={c.sky.season || '—'} />
         </div>
-        <p className="mt-4 text-sm text-[var(--color-mist)]">
+        {c.sky.seasonNote && (
+          <p className="mt-4 font-display text-lg text-[var(--color-amber-soft)] md:text-xl">
+            {c.sky.seasonNote}
+          </p>
+        )}
+        <p className="mt-3 text-sm text-[var(--color-mist)]">
           Computed for {story.city.label}
           {story.time ? ` at ${story.time}` : ' (noon local used for the moon)'}.
         </p>
@@ -432,7 +446,11 @@ function Certificate({ story }: { story: StoryPayload }) {
         />
       </div>
       <div className="mx-auto mt-6 grid max-w-md gap-2 text-sm text-[var(--color-cream)]/90">
-        <p>The sky: {c.sky.moonPhase}, {c.sky.illuminationPct}% lit</p>
+        <p>
+          The sky: {c.sky.moonPhase}, {c.sky.illuminationPct}% lit
+          {c.sky.daylightLabel ? ` · ${c.sky.daylightLabel} day` : ''}
+          {c.sky.season ? ` · ${c.sky.season}` : ''}
+        </p>
         {c.births.dailyBirths != null && (
           <p>
             Born with you: about {formatNumber(c.births.dailyBirths)} people that day · world
