@@ -7,6 +7,7 @@ export type ChapterId =
   | 'song'
   | 'prices'
   | 'life'
+  | 'births'
   | 'star'
   | 'headlines'
   | 'twins'
@@ -66,6 +67,13 @@ export const CHAPTERS: ChapterDef[] = [
     label: 'Life in numbers',
     title: 'Your life in numbers',
     teaser: 'Days, orbits, heartbeats and full moons.',
+  },
+  {
+    id: 'births',
+    access: 'free',
+    label: 'Born With You',
+    title: 'How many arrived on your day',
+    teaser: 'A modeled count of babies who shared your first day.',
   },
   {
     id: 'star',
