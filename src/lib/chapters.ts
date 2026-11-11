@@ -2,6 +2,7 @@ export type ChapterAccess = 'free' | 'paid'
 
 export type ChapterId =
   | 'sky'
+  | 'starmap'
   | 'weather'
   | 'song'
   | 'prices'
@@ -30,6 +31,13 @@ export const CHAPTERS: ChapterDef[] = [
     label: 'The Sky',
     title: 'The sky overhead',
     teaser: 'Moon, sunrise and sunset on your day.',
+  },
+  {
+    id: 'starmap',
+    access: 'free',
+    label: 'Your Sky Map',
+    title: 'The sky above the place you arrived',
+    teaser: 'A star chart for your birth date and city.',
   },
   {
     id: 'weather',

@@ -8,6 +8,7 @@ import {
   lookupSong,
   lookupStar,
 } from './lib/lookups'
+import { computeStarMap } from './lib/starmap'
 
 export type CityHit = {
   label: string
@@ -32,6 +33,7 @@ export type StoryPayload = {
     }) | null
     prices: ReturnType<typeof lookupPrices>
     life: ReturnType<typeof lifeNumbers>
+    starmap: ReturnType<typeof computeStarMap>
     star: ReturnType<typeof lookupStar>
     headlines: { title: string; year?: number; url?: string }[]
     twins: { name: string; year?: number; description?: string }[]
@@ -375,6 +377,13 @@ export async function buildStory(opts: {
       song: song ? { ...song, ...itunes } : null,
       prices: lookupPrices(y),
       life: lifeNumbers(opts.date),
+      starmap: computeStarMap({
+        date: opts.date,
+        time: opts.time,
+        lat: city.lat,
+        lon: city.lon,
+        timeZone: city.timeZone,
+      }),
       star: lookupStar(age),
       headlines,
       twins,
@@ -385,6 +394,8 @@ export async function buildStory(opts: {
     sources: [
       'Open-Meteo',
       'Astronomy Engine',
+      'Yale Bright Star Catalogue (via d3-celestial)',
+      'IAU constellation figures',
       'Billboard Hot 100 (bundled chart dates)',
       'US price/CPI snapshots',
       'Wikipedia On This Day',

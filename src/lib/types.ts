@@ -60,6 +60,24 @@ export type StoryPayload = {
       heartbeats: number
       fullMoons: number
     }
+    starmap: {
+      stars: { x: number; y: number; mag: number }[]
+      lines: [number, number][][]
+      moon: {
+        x: number
+        y: number
+        phase: string
+        illuminationPct: number
+      } | null
+      planets: { name: string; x: number; y: number }[]
+      whenIso: string
+      usedMidnight: boolean
+      timeLabel: string | null
+      lat: number
+      lon: number
+      magLimit: number
+      source: string
+    }
     star: {
       name: string
       constellation: string
