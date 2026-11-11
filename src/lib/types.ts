@@ -118,6 +118,19 @@ export type StoryPayload = {
       notes: string
       coverage: { minYear: number; maxYear: number }
     }
+    leaders: {
+      year: number
+      dataYear: number | null
+      clamped: boolean
+      countryInput: string | null
+      country: string | null
+      name: string | null
+      title: string | null
+      supported: boolean
+      source: string
+      notes: string
+      coverage: { minYear: number; maxYear: number }
+    }
     culture: {
       year: number
       film: string
