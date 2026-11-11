@@ -13,6 +13,7 @@ export type ChapterId =
   | 'twins'
   | 'market'
   | 'film'
+  | 'leaders'
   | 'culture'
   | 'nasa'
   | 'certificate'
@@ -110,6 +111,13 @@ export const CHAPTERS: ChapterDef[] = [
     label: 'The Big Screen',
     title: 'The year’s biggest screens',
     teaser: 'The US box-office leader the year you arrived.',
+  },
+  {
+    id: 'leaders',
+    access: 'free',
+    label: 'Your Year',
+    title: 'Who led the country you arrived in',
+    teaser: 'The national leader usually listed for your birth year.',
   },
   {
     id: 'culture',

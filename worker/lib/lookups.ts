@@ -1,6 +1,7 @@
 import billboard from '../data/billboard.json'
 import birthsPopulation from '../data/births-population.json'
 import films from '../data/films.json'
+import leaders from '../data/leaders.json'
 import prices from '../data/prices.json'
 import stars from '../data/stars.json'
 import market from '../data/market.json'
@@ -293,5 +294,52 @@ export function lookupBirths(year: number) {
     source: BIRTHS_POP.source,
     notes: BIRTHS_POP.notes,
     coverage: BIRTHS_POP.coverage,
+  }
+}
+
+type LeaderYearRow = { name: string; title: string }
+
+type LeadersDataset = {
+  source: string
+  notes: string
+  coverage: { minYear: number; maxYear: number }
+  aliases: Record<string, string>
+  byCountry: Record<string, Record<string, LeaderYearRow>>
+}
+
+const LEADERS = leaders as LeadersDataset
+
+function resolveLeaderCountry(country?: string | null) {
+  if (!country?.trim()) return null
+  const raw = country.trim()
+  if (LEADERS.byCountry[raw]) return raw
+  const alias = LEADERS.aliases[raw.toLowerCase()]
+  if (alias && LEADERS.byCountry[alias]) return alias
+  // soft match: country name contained in key or vice versa
+  const lower = raw.toLowerCase()
+  for (const key of Object.keys(LEADERS.byCountry)) {
+    if (key.toLowerCase() === lower) return key
+  }
+  return null
+}
+
+/** Mid-year national leader for the birth country (keepsake; soft language). */
+export function lookupLeaders(year: number, country?: string | null) {
+  const { minYear, maxYear } = LEADERS.coverage
+  const clamped = Math.min(maxYear, Math.max(minYear, year))
+  const resolved = resolveLeaderCountry(country)
+  const row = resolved ? LEADERS.byCountry[resolved]?.[String(clamped)] : undefined
+  return {
+    year,
+    dataYear: row ? clamped : null,
+    clamped: row ? clamped !== year : false,
+    countryInput: country?.trim() || null,
+    country: resolved,
+    name: row?.name ?? null,
+    title: row?.title ?? null,
+    supported: Boolean(resolved),
+    source: LEADERS.source,
+    notes: LEADERS.notes,
+    coverage: LEADERS.coverage,
   }
 }

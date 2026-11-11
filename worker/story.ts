@@ -5,6 +5,7 @@ import {
   lookupBirths,
   lookupCulture,
   lookupFilm,
+  lookupLeaders,
   lookupMarket,
   lookupPrices,
   lookupSong,
@@ -42,6 +43,7 @@ export type StoryPayload = {
     twins: { name: string; year?: number; description?: string }[]
     market: ReturnType<typeof lookupMarket>
     film: ReturnType<typeof lookupFilm>
+    leaders: ReturnType<typeof lookupLeaders>
     culture: ReturnType<typeof lookupCulture> & ReturnType<typeof birthMeta>
     nasa: {
       title: string
@@ -394,6 +396,7 @@ export async function buildStory(opts: {
       twins,
       market: lookupMarket(y),
       film: lookupFilm(y),
+      leaders: lookupLeaders(y, city.country),
       culture: { ...lookupCulture(y), ...birthMeta(opts.date) },
       nasa,
     },
@@ -404,6 +407,7 @@ export async function buildStory(opts: {
       'IAU constellation figures',
       'UN World Population Prospects 2024 (via Our World in Data)',
       'Box Office Mojo Domestic Yearly Box Office',
+      'Wikidata / curated national leadership timelines',
       'Billboard Hot 100 (bundled chart dates)',
       'US price/CPI snapshots',
       'Wikipedia On This Day',

@@ -283,6 +283,34 @@ export function AllChapters({ story }: { story: StoryPayload }) {
         )}
       </ChapterShell>
 
+      <ChapterShell id="leaders">
+        {c.leaders.name && c.leaders.country ? (
+          <>
+            <p className="font-display text-3xl text-[var(--color-amber-soft)] md:text-4xl">
+              {c.leaders.name}
+            </p>
+            <p className="mt-2 text-lg text-[var(--color-cream)]">
+              usually listed as {c.leaders.title} of {c.leaders.country}
+              {c.leaders.dataYear ? ` in ${c.leaders.dataYear}` : ''}
+            </p>
+            <p className="mt-4 text-sm leading-relaxed text-[var(--color-mist)]">
+              Mid-year snapshot for the country on your story ({c.leaders.country}
+              {c.leaders.clamped ? `; nearest chart year for ${c.leaders.year}` : ''}).
+              Transitions, acting leaders, and disputed authorities may differ — a keepsake
+              reconstruction, not an official register.
+            </p>
+          </>
+        ) : c.leaders.supported ? (
+          <Missing>
+            {`We have ${c.leaders.country} in our timeline, but not a mid-year leader for ${c.leaders.year} yet.`}
+          </Missing>
+        ) : (
+          <Missing>
+            {`We don’t yet have a national-leader timeline for ${c.leaders.countryInput || 'this birth country'} — more countries are being added.`}
+          </Missing>
+        )}
+      </ChapterShell>
+
       <ChapterShell id="culture">
         <div className="grid gap-4 sm:grid-cols-2">
           <Stat label="Generation" value={c.culture.generation} />
@@ -413,6 +441,11 @@ function Certificate({ story }: { story: StoryPayload }) {
         {c.film.title && (
           <p>
             The screen: {c.film.title} ({c.film.dataYear})
+          </p>
+        )}
+        {c.leaders.name && c.leaders.country && (
+          <p>
+            Your year: {c.leaders.name}, {c.leaders.title} of {c.leaders.country}
           </p>
         )}
         {c.song && (
