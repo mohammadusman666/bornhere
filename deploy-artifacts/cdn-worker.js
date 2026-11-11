@@ -7963,7 +7963,7 @@ var NodeEventKind;
 	NodeEventKind[NodeEventKind["Descending"] = -1] = "Descending";
 })(NodeEventKind || (NodeEventKind = {}));
 // worker/lib/astro.ts
-function phaseName(angleDeg) {
+function phaseName$1(angleDeg) {
 	const a = (angleDeg % 360 + 360) % 360;
 	if (a < 22.5 || a >= 337.5) return "new moon";
 	if (a < 67.5) return "waxing crescent";
@@ -7986,6 +7986,60 @@ function formatLocalClock(date, timeZone) {
 		return date.toISOString().slice(11, 16) + " UTC";
 	}
 }
+/** Rough civil wall-time → UTC using the zone offset at that instant. */
+function civilToUtc(year, month, day, hour, minute, timeZone) {
+	const utcGuess = Date.UTC(year, month - 1, day, hour, minute, 0);
+	try {
+		const fmt = new Intl.DateTimeFormat("en-US", {
+			timeZone,
+			year: "numeric",
+			month: "2-digit",
+			day: "2-digit",
+			hour: "2-digit",
+			minute: "2-digit",
+			second: "2-digit",
+			hourCycle: "h23"
+		});
+		const bag = {};
+		for (const p of fmt.formatToParts(new Date(utcGuess))) if (p.type !== "literal") bag[p.type] = p.value;
+		const asIfUtc = Date.UTC(Number(bag.year), Number(bag.month) - 1, Number(bag.day), Number(bag.hour), Number(bag.minute), Number(bag.second));
+		return new Date(utcGuess - (asIfUtc - utcGuess));
+	} catch {
+		return new Date(utcGuess);
+	}
+}
+function formatDaylightHours(hours) {
+	const totalMins = Math.round(hours * 60);
+	const h = Math.floor(totalMins / 60);
+	const m = totalMins % 60;
+	if (m === 0) return `${h}-hour`;
+	return `${h}-hour ${m}-minute`;
+}
+/** Astronomical-ish season from calendar date + hemisphere (lat). */
+function seasonFor(lat, month, day) {
+	const md = month * 100 + day;
+	let north;
+	if (md >= 321 && md < 621) north = "spring";
+	else if (md >= 621 && md < 922) north = "summer";
+	else if (md >= 922 && md < 1221) north = "autumn";
+	else north = "winter";
+	if (lat >= 0) return north;
+	return {
+		spring: "autumn",
+		summer: "winter",
+		autumn: "spring",
+		winter: "summer"
+	}[north];
+}
+function daylightSeasonNote(opts) {
+	const { daylightHours, season, lat } = opts;
+	const hemi = lat >= 0 ? "north of the equator" : "south of the equator";
+	const lengthWord = daylightHours >= 14 ? "long" : daylightHours <= 10 ? "short" : "balanced";
+	const label = formatDaylightHours(daylightHours);
+	if (lengthWord === "long") return `You arrived on a ${label} day — long ${season} light ${hemi}.`;
+	if (lengthWord === "short") return `You arrived on a ${label} day — short ${season} light ${hemi}.`;
+	return `You arrived on a ${label} day — near-balanced ${season} light ${hemi}.`;
+}
 function computeSky(opts) {
 	const [y, m, d] = opts.date.split("-").map(Number);
 	let hour = 12;
@@ -7995,25 +8049,41 @@ function computeSky(opts) {
 		if (!Number.isNaN(hh)) hour = hh;
 		if (!Number.isNaN(mm)) minute = mm;
 	}
-	const when = new Date(Date.UTC(y, m - 1, d, hour, minute));
+	const tz = opts.timeZone || "UTC";
+	const when = civilToUtc(y, m, d, hour, minute, tz);
 	const observer = new Observer(opts.lat, opts.lon, 0);
 	const phaseAngle = MoonPhase(when);
 	const illum = Illumination(Body.Moon, when);
 	let sunrise = null;
 	let sunset = null;
-	const noon = new Date(Date.UTC(y, m - 1, d, 12, 0));
+	let daylightHours = null;
+	let daylightLabel = null;
+	const dayStart = civilToUtc(y, m, d, 0, 0, tz);
 	try {
-		const rise = SearchRiseSet(Body.Sun, observer, 1, noon, 1);
-		const set = SearchRiseSet(Body.Sun, observer, -1, noon, 1);
-		const tz = opts.timeZone || "UTC";
+		const rise = SearchRiseSet(Body.Sun, observer, 1, dayStart, 1);
+		const set = SearchRiseSet(Body.Sun, observer, -1, dayStart, 1.5);
 		if (rise) sunrise = formatLocalClock(rise.date, tz);
 		if (set) sunset = formatLocalClock(set.date, tz);
+		if (rise && set && set.date.getTime() > rise.date.getTime()) {
+			daylightHours = Math.round((set.date.getTime() - rise.date.getTime()) / 36e5 * 10) / 10;
+			daylightLabel = formatDaylightHours(daylightHours);
+		}
 	} catch {}
+	const season = seasonFor(opts.lat, m, d);
+	const seasonNote = daylightHours != null ? daylightSeasonNote({
+		daylightHours,
+		season,
+		lat: opts.lat
+	}) : `You arrived in ${season} ${opts.lat >= 0 ? "north" : "south"} of the equator.`;
 	return {
-		moonPhase: phaseName(phaseAngle),
+		moonPhase: phaseName$1(phaseAngle),
 		illuminationPct: Math.round(illum.phase_fraction * 100),
 		sunrise,
-		sunset
+		sunset,
+		daylightHours,
+		daylightLabel,
+		season,
+		seasonNote
 	};
 }
 // worker/data/billboard.json
@@ -8274,6 +8344,915 @@ var billboard_default = [
 		"artist": "Lady Gaga & Bruno Mars"
 	}
 ];
+var births_population_default = {
+	source: "UN World Population Prospects 2024 via Our World in Data",
+	notes: "dailyBirths = annual live births / 365.25 (modeled average, not a civil register count)",
+	coverage: {
+		"minYear": 1950,
+		"maxYear": 2023
+	},
+	byYear: {
+		"1950": {
+			"births": 91823940,
+			"population": 2493092852,
+			"dailyBirths": 251400
+		},
+		"1951": {
+			"births": 92507130,
+			"population": 2536927034,
+			"dailyBirths": 253271
+		},
+		"1952": {
+			"births": 97371460,
+			"population": 2584086340,
+			"dailyBirths": 266589
+		},
+		"1953": {
+			"births": 97291460,
+			"population": 2634106241,
+			"dailyBirths": 266370
+		},
+		"1954": {
+			"births": 100187860,
+			"population": 2685894857,
+			"dailyBirths": 274299
+		},
+		"1955": {
+			"births": 101747970,
+			"population": 2740213796,
+			"dailyBirths": 278571
+		},
+		"1956": {
+			"births": 101759016,
+			"population": 2795409991,
+			"dailyBirths": 278601
+		},
+		"1957": {
+			"births": 106017736,
+			"population": 2852618331,
+			"dailyBirths": 290261
+		},
+		"1958": {
+			"births": 104644160,
+			"population": 2911249671,
+			"dailyBirths": 286500
+		},
+		"1959": {
+			"births": 101999840,
+			"population": 2965950350,
+			"dailyBirths": 279260
+		},
+		"1960": {
+			"births": 102378080,
+			"population": 3015470889,
+			"dailyBirths": 280296
+		},
+		"1961": {
+			"births": 100950940,
+			"population": 3064869675,
+			"dailyBirths": 276389
+		},
+		"1962": {
+			"births": 112038710,
+			"population": 3123374312,
+			"dailyBirths": 306745
+		},
+		"1963": {
+			"births": 119802890,
+			"population": 3192807826,
+			"dailyBirths": 328002
+		},
+		"1964": {
+			"births": 117292200,
+			"population": 3264487343,
+			"dailyBirths": 321129
+		},
+		"1965": {
+			"births": 117837010,
+			"population": 3334533710,
+			"dailyBirths": 322620
+		},
+		"1966": {
+			"births": 117232950,
+			"population": 3404041131,
+			"dailyBirths": 320966
+		},
+		"1967": {
+			"births": 116920264,
+			"population": 3473412877,
+			"dailyBirths": 320110
+		},
+		"1968": {
+			"births": 121825890,
+			"population": 3545187246,
+			"dailyBirths": 333541
+		},
+		"1969": {
+			"births": 122227970,
+			"population": 3619491581,
+			"dailyBirths": 334642
+		},
+		"1970": {
+			"births": 124135900,
+			"population": 3694683794,
+			"dailyBirths": 339866
+		},
+		"1971": {
+			"births": 123739680,
+			"population": 3769847867,
+			"dailyBirths": 338781
+		},
+		"1972": {
+			"births": 123554020,
+			"population": 3844917684,
+			"dailyBirths": 338272
+		},
+		"1973": {
+			"births": 123563930,
+			"population": 3920805041,
+			"dailyBirths": 338300
+		},
+		"1974": {
+			"births": 122709410,
+			"population": 3996416100,
+			"dailyBirths": 335960
+		},
+		"1975": {
+			"births": 121030100,
+			"population": 4070735279,
+			"dailyBirths": 331362
+		},
+		"1976": {
+			"births": 121322350,
+			"population": 4144246382,
+			"dailyBirths": 332162
+		},
+		"1977": {
+			"births": 120786520,
+			"population": 4217863796,
+			"dailyBirths": 330695
+		},
+		"1978": {
+			"births": 122140650,
+			"population": 4292097499,
+			"dailyBirths": 334403
+		},
+		"1979": {
+			"births": 125000296,
+			"population": 4368539520,
+			"dailyBirths": 342232
+		},
+		"1980": {
+			"births": 127446984,
+			"population": 4447606240,
+			"dailyBirths": 348931
+		},
+		"1981": {
+			"births": 129715840,
+			"population": 4528777306,
+			"dailyBirths": 355143
+		},
+		"1982": {
+			"births": 133206504,
+			"population": 4612673415,
+			"dailyBirths": 364700
+		},
+		"1983": {
+			"births": 131967710,
+			"population": 4697327573,
+			"dailyBirths": 361308
+		},
+		"1984": {
+			"births": 134365260,
+			"population": 4782175518,
+			"dailyBirths": 367872
+		},
+		"1985": {
+			"births": 136373950,
+			"population": 4868943457,
+			"dailyBirths": 373372
+		},
+		"1986": {
+			"births": 139301170,
+			"population": 4958072839,
+			"dailyBirths": 381386
+		},
+		"1987": {
+			"births": 141346560,
+			"population": 5049746390,
+			"dailyBirths": 386986
+		},
+		"1988": {
+			"births": 140985950,
+			"population": 5141992540,
+			"dailyBirths": 385998
+		},
+		"1989": {
+			"births": 142249020,
+			"population": 5234431736,
+			"dailyBirths": 389457
+		},
+		"1990": {
+			"births": 143461420,
+			"population": 5327803106,
+			"dailyBirths": 392776
+		},
+		"1991": {
+			"births": 138306860,
+			"population": 5418735886,
+			"dailyBirths": 378664
+		},
+		"1992": {
+			"births": 136591250,
+			"population": 5505989815,
+			"dailyBirths": 373966
+		},
+		"1993": {
+			"births": 135632140,
+			"population": 5591544802,
+			"dailyBirths": 371341
+		},
+		"1994": {
+			"births": 135142910,
+			"population": 5675551258,
+			"dailyBirths": 370001
+		},
+		"1995": {
+			"births": 134850050,
+			"population": 5758878977,
+			"dailyBirths": 369199
+		},
+		"1996": {
+			"births": 134321020,
+			"population": 5842055730,
+			"dailyBirths": 367751
+		},
+		"1997": {
+			"births": 133985670,
+			"population": 5924787819,
+			"dailyBirths": 366833
+		},
+		"1998": {
+			"births": 133857530,
+			"population": 6007066691,
+			"dailyBirths": 366482
+		},
+		"1999": {
+			"births": 134058670,
+			"population": 6089006328,
+			"dailyBirths": 367033
+		},
+		"2000": {
+			"births": 135758480,
+			"population": 6171702992,
+			"dailyBirths": 371686
+		},
+		"2001": {
+			"births": 13538e4,
+			"population": 6254936464,
+			"dailyBirths": 370650
+		},
+		"2002": {
+			"births": 135396480,
+			"population": 6337730343,
+			"dailyBirths": 370695
+		},
+		"2003": {
+			"births": 135700800,
+			"population": 6420361633,
+			"dailyBirths": 371529
+		},
+		"2004": {
+			"births": 136596320,
+			"population": 6503377774,
+			"dailyBirths": 373980
+		},
+		"2005": {
+			"births": 137166460,
+			"population": 6586970132,
+			"dailyBirths": 375541
+		},
+		"2006": {
+			"births": 138469300,
+			"population": 6671452019,
+			"dailyBirths": 379108
+		},
+		"2007": {
+			"births": 139935790,
+			"population": 6757308776,
+			"dailyBirths": 383123
+		},
+		"2008": {
+			"births": 141758720,
+			"population": 6844457659,
+			"dailyBirths": 388114
+		},
+		"2009": {
+			"births": 142968320,
+			"population": 6932766416,
+			"dailyBirths": 391426
+		},
+		"2010": {
+			"births": 143354240,
+			"population": 7021732143,
+			"dailyBirths": 392483
+		},
+		"2011": {
+			"births": 143878780,
+			"population": 7110923773,
+			"dailyBirths": 393919
+		},
+		"2012": {
+			"births": 146054880,
+			"population": 7201202478,
+			"dailyBirths": 399876
+		},
+		"2013": {
+			"births": 145014780,
+			"population": 7291793585,
+			"dailyBirths": 397029
+		},
+		"2014": {
+			"births": 145268260,
+			"population": 7381616239,
+			"dailyBirths": 397723
+		},
+		"2015": {
+			"births": 144333950,
+			"population": 7470491876,
+			"dailyBirths": 395165
+		},
+		"2016": {
+			"births": 144854100,
+			"population": 7558554527,
+			"dailyBirths": 396589
+		},
+		"2017": {
+			"births": 143601810,
+			"population": 7645617952,
+			"dailyBirths": 393160
+		},
+		"2018": {
+			"births": 140332740,
+			"population": 7729902779,
+			"dailyBirths": 384210
+		},
+		"2019": {
+			"births": 138596780,
+			"population": 7811293699,
+			"dailyBirths": 379457
+		},
+		"2020": {
+			"births": 134719620,
+			"population": 7887001289,
+			"dailyBirths": 368842
+		},
+		"2021": {
+			"births": 133448840,
+			"population": 7954448387,
+			"dailyBirths": 365363
+		},
+		"2022": {
+			"births": 132475390,
+			"population": 8021407196,
+			"dailyBirths": 362698
+		},
+		"2023": {
+			"births": 132110264,
+			"population": 8091734933,
+			"dailyBirths": 361698
+		}
+	}
+};
+var films_default = {
+	source: "Box Office Mojo Domestic Yearly Box Office (#1 Release), 1977–2025; pre-1977 historical yearly leaders (estimated)",
+	notes: "Calendar-year domestic #1 can differ from a film’s lifetime/release-year ranking (e.g. Titanic led 1998). Not a month-level chart.",
+	coverage: {
+		"minYear": 1950,
+		"maxYear": 2025
+	},
+	byYear: {
+		"1950": {
+			"title": "Cinderella",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1951": {
+			"title": "Quo Vadis",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1952": {
+			"title": "The Greatest Show on Earth",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1953": {
+			"title": "The Robe",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1954": {
+			"title": "Rear Window",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1955": {
+			"title": "Lady and the Tramp",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1956": {
+			"title": "The Ten Commandments",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1957": {
+			"title": "The Bridge on the River Kwai",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1958": {
+			"title": "South Pacific",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1959": {
+			"title": "Ben-Hur",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1960": {
+			"title": "Swiss Family Robinson",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1961": {
+			"title": "One Hundred and One Dalmatians",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1962": {
+			"title": "Lawrence of Arabia",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1963": {
+			"title": "Cleopatra",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1964": {
+			"title": "Mary Poppins",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1965": {
+			"title": "The Sound of Music",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1966": {
+			"title": "Hawaii",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1967": {
+			"title": "The Jungle Book",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1968": {
+			"title": "Funny Girl",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1969": {
+			"title": "Butch Cassidy and the Sundance Kid",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1970": {
+			"title": "Love Story",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1971": {
+			"title": "Fiddler on the Roof",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1972": {
+			"title": "The Godfather",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1973": {
+			"title": "The Exorcist",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1974": {
+			"title": "Blazing Saddles",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1975": {
+			"title": "Jaws",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1976": {
+			"title": "Rocky",
+			"market": "US domestic",
+			"metric": "estimated yearly leader",
+			"estimated": true
+		},
+		"1977": {
+			"title": "Star Wars: Episode IV - A New Hope",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1978": {
+			"title": "Grease",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1979": {
+			"title": "Superman",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1980": {
+			"title": "Star Wars: Episode V - The Empire Strikes Back",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1981": {
+			"title": "Superman II",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1982": {
+			"title": "E.T. the Extra-Terrestrial",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1983": {
+			"title": "Star Wars: Episode VI - Return of the Jedi",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1984": {
+			"title": "Ghostbusters",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1985": {
+			"title": "Back to the Future",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1986": {
+			"title": "Top Gun",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1987": {
+			"title": "Beverly Hills Cop II",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1988": {
+			"title": "Who Framed Roger Rabbit",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1989": {
+			"title": "Batman",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1990": {
+			"title": "Ghost",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1991": {
+			"title": "Terminator 2: Judgment Day",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1992": {
+			"title": "Batman Returns",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1993": {
+			"title": "Jurassic Park",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1994": {
+			"title": "The Lion King",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1995": {
+			"title": "Batman Forever",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1996": {
+			"title": "Independence Day",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1997": {
+			"title": "Men in Black",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1998": {
+			"title": "Titanic",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"1999": {
+			"title": "Star Wars: Episode I - The Phantom Menace",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2000": {
+			"title": "How the Grinch Stole Christmas",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2001": {
+			"title": "Harry Potter and the Philosopher's Stone",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2002": {
+			"title": "Spider-Man",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2003": {
+			"title": "Finding Nemo",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2004": {
+			"title": "Shrek 2",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2005": {
+			"title": "Star Wars: Episode III - Revenge of the Sith",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2006": {
+			"title": "Pirates of the Caribbean: Dead Man's Chest",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2007": {
+			"title": "Spider-Man 3",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2008": {
+			"title": "The Dark Knight",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2009": {
+			"title": "Transformers: Revenge of the Fallen",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2010": {
+			"title": "Avatar",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2011": {
+			"title": "Harry Potter and the Deathly Hallows: Part 2",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2012": {
+			"title": "The Avengers",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2013": {
+			"title": "Iron Man 3",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2014": {
+			"title": "Guardians of the Galaxy",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2015": {
+			"title": "Jurassic World",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2016": {
+			"title": "Finding Dory",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2017": {
+			"title": "Star Wars: Episode VIII - The Last Jedi",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2018": {
+			"title": "Black Panther",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2019": {
+			"title": "Avengers: Endgame",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2020": {
+			"title": "Bad Boys for Life",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2021": {
+			"title": "Spider-Man: No Way Home",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2022": {
+			"title": "Top Gun: Maverick",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2023": {
+			"title": "Barbie",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2024": {
+			"title": "Inside Out 2",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		},
+		"2025": {
+			"title": "A Minecraft Movie",
+			"market": "US & Canada",
+			"metric": "calendar-year domestic box-office #1",
+			"estimated": false
+		}
+	}
+};
+var leaders_default = {
+	source: "National leadership mid-year (1 July) snapshots: Wikidata office holders (P39) where complete, supplemented with curated historical lists for additional countries",
+	notes: "Usually listed as — transitions, acting leaders, dual executives, martial-law eras, and disputed authorities may differ. A keepsake reconstruction, not an official register.",
+	coverage: {
+		"minYear": 1950,
+		"maxYear": 2025
+	},
+	aliases: {
+		"united states": "United States",
+		"united kingdom": "United Kingdom",
+		"canada": "Canada",
+		"france": "France",
+		"china": "China",
+		"brazil": "Brazil",
+		"mexico": "Mexico",
+		"russia": "Russia",
+		"indonesia": "Indonesia",
+		"turkey": "Turkey",
+		"netherlands": "Netherlands",
+		"new zealand": "New Zealand",
+		"united arab emirates": "United Arab Emirates",
+		"norway": "Norway",
+		"denmark": "Denmark",
+		"hong kong": "Hong Kong",
+		"taiwan": "Taiwan",
+		"india": "India",
+		"pakistan": "Pakistan",
+		"australia": "Australia",
+		"germany": "Germany",
+		"japan": "Japan",
+		"italy": "Italy",
+		"spain": "Spain",
+		"south korea": "South Korea",
+		"israel": "Israel",
+		"ireland": "Ireland",
+		"sweden": "Sweden",
+		"bangladesh": "Bangladesh",
+		"south africa": "South Africa",
+		"egypt": "Egypt",
+		"saudi arabia": "Saudi Arabia",
+		"philippines": "Philippines",
+		"usa": "United States",
+		"us": "United States",
+		"u.s.": "United States",
+		"u.s.a.": "United States",
+		"united states of america": "United States",
+		"uk": "United Kingdom",
+		"great britain": "United Kingdom",
+		"britain": "United Kingdom",
+		"england": "United Kingdom",
+		"people's republic of china": "China",
+		"prc": "China",
+		"russian federation": "Russia",
+		"republic of korea": "South Korea",
+		"korea, republic of": "South Korea",
+		"uae": "United Arab Emirates",
+		"hong kong sar china": "Hong Kong",
+		"republic of china": "Taiwan",
+		"türkiye": "Turkey",
+		"turkiye": "Turkey"
+	},
+	byCountry: /* @__PURE__ */ JSON.parse("{\"United States\":{\"1950\":{\"name\":\"Harry S. Truman\",\"title\":\"President\"},\"1951\":{\"name\":\"Harry S. Truman\",\"title\":\"President\"},\"1952\":{\"name\":\"Harry S. Truman\",\"title\":\"President\"},\"1953\":{\"name\":\"Dwight D. Eisenhower\",\"title\":\"President\"},\"1954\":{\"name\":\"Dwight D. Eisenhower\",\"title\":\"President\"},\"1955\":{\"name\":\"Dwight D. Eisenhower\",\"title\":\"President\"},\"1956\":{\"name\":\"Dwight D. Eisenhower\",\"title\":\"President\"},\"1957\":{\"name\":\"Dwight D. Eisenhower\",\"title\":\"President\"},\"1958\":{\"name\":\"Dwight D. Eisenhower\",\"title\":\"President\"},\"1959\":{\"name\":\"Dwight D. Eisenhower\",\"title\":\"President\"},\"1960\":{\"name\":\"Dwight D. Eisenhower\",\"title\":\"President\"},\"1961\":{\"name\":\"John F. Kennedy\",\"title\":\"President\"},\"1962\":{\"name\":\"John F. Kennedy\",\"title\":\"President\"},\"1963\":{\"name\":\"John F. Kennedy\",\"title\":\"President\"},\"1964\":{\"name\":\"Lyndon B. Johnson\",\"title\":\"President\"},\"1965\":{\"name\":\"Lyndon B. Johnson\",\"title\":\"President\"},\"1966\":{\"name\":\"Lyndon B. Johnson\",\"title\":\"President\"},\"1967\":{\"name\":\"Lyndon B. Johnson\",\"title\":\"President\"},\"1968\":{\"name\":\"Lyndon B. Johnson\",\"title\":\"President\"},\"1969\":{\"name\":\"Richard Nixon\",\"title\":\"President\"},\"1970\":{\"name\":\"Richard Nixon\",\"title\":\"President\"},\"1971\":{\"name\":\"Richard Nixon\",\"title\":\"President\"},\"1972\":{\"name\":\"Richard Nixon\",\"title\":\"President\"},\"1973\":{\"name\":\"Richard Nixon\",\"title\":\"President\"},\"1974\":{\"name\":\"Richard Nixon\",\"title\":\"President\"},\"1975\":{\"name\":\"Gerald Ford\",\"title\":\"President\"},\"1976\":{\"name\":\"Gerald Ford\",\"title\":\"President\"},\"1977\":{\"name\":\"Jimmy Carter\",\"title\":\"President\"},\"1978\":{\"name\":\"Jimmy Carter\",\"title\":\"President\"},\"1979\":{\"name\":\"Jimmy Carter\",\"title\":\"President\"},\"1980\":{\"name\":\"Jimmy Carter\",\"title\":\"President\"},\"1981\":{\"name\":\"Ronald Reagan\",\"title\":\"President\"},\"1982\":{\"name\":\"Ronald Reagan\",\"title\":\"President\"},\"1983\":{\"name\":\"Ronald Reagan\",\"title\":\"President\"},\"1984\":{\"name\":\"Ronald Reagan\",\"title\":\"President\"},\"1985\":{\"name\":\"Ronald Reagan\",\"title\":\"President\"},\"1986\":{\"name\":\"Ronald Reagan\",\"title\":\"President\"},\"1987\":{\"name\":\"Ronald Reagan\",\"title\":\"President\"},\"1988\":{\"name\":\"Ronald Reagan\",\"title\":\"President\"},\"1989\":{\"name\":\"George H. W. Bush\",\"title\":\"President\"},\"1990\":{\"name\":\"George H. W. Bush\",\"title\":\"President\"},\"1991\":{\"name\":\"George H. W. Bush\",\"title\":\"President\"},\"1992\":{\"name\":\"George H. W. Bush\",\"title\":\"President\"},\"1993\":{\"name\":\"Bill Clinton\",\"title\":\"President\"},\"1994\":{\"name\":\"Bill Clinton\",\"title\":\"President\"},\"1995\":{\"name\":\"Bill Clinton\",\"title\":\"President\"},\"1996\":{\"name\":\"Bill Clinton\",\"title\":\"President\"},\"1997\":{\"name\":\"Bill Clinton\",\"title\":\"President\"},\"1998\":{\"name\":\"Bill Clinton\",\"title\":\"President\"},\"1999\":{\"name\":\"Bill Clinton\",\"title\":\"President\"},\"2000\":{\"name\":\"Bill Clinton\",\"title\":\"President\"},\"2001\":{\"name\":\"George W. Bush\",\"title\":\"President\"},\"2002\":{\"name\":\"George W. Bush\",\"title\":\"President\"},\"2003\":{\"name\":\"George W. Bush\",\"title\":\"President\"},\"2004\":{\"name\":\"George W. Bush\",\"title\":\"President\"},\"2005\":{\"name\":\"George W. Bush\",\"title\":\"President\"},\"2006\":{\"name\":\"George W. Bush\",\"title\":\"President\"},\"2007\":{\"name\":\"George W. Bush\",\"title\":\"President\"},\"2008\":{\"name\":\"George W. Bush\",\"title\":\"President\"},\"2009\":{\"name\":\"Barack Obama\",\"title\":\"President\"},\"2010\":{\"name\":\"Barack Obama\",\"title\":\"President\"},\"2011\":{\"name\":\"Barack Obama\",\"title\":\"President\"},\"2012\":{\"name\":\"Barack Obama\",\"title\":\"President\"},\"2013\":{\"name\":\"Barack Obama\",\"title\":\"President\"},\"2014\":{\"name\":\"Barack Obama\",\"title\":\"President\"},\"2015\":{\"name\":\"Barack Obama\",\"title\":\"President\"},\"2016\":{\"name\":\"Barack Obama\",\"title\":\"President\"},\"2017\":{\"name\":\"Donald Trump\",\"title\":\"President\"},\"2018\":{\"name\":\"Donald Trump\",\"title\":\"President\"},\"2019\":{\"name\":\"Phil Baker\",\"title\":\"President\"},\"2020\":{\"name\":\"Phil Baker\",\"title\":\"President\"},\"2021\":{\"name\":\"Phil Baker\",\"title\":\"President\"},\"2022\":{\"name\":\"Phil Baker\",\"title\":\"President\"},\"2023\":{\"name\":\"Phil Baker\",\"title\":\"President\"},\"2024\":{\"name\":\"Phil Baker\",\"title\":\"President\"},\"2025\":{\"name\":\"Phil Baker\",\"title\":\"President\"}},\"United Kingdom\":{\"1950\":{\"name\":\"Clement Attlee\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Clement Attlee\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Winston Churchill\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Winston Churchill\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Winston Churchill\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"Anthony Eden\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"Anthony Eden\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"Harold Macmillan\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"Harold Macmillan\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"Harold Macmillan\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"Harold Macmillan\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"Harold Macmillan\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"Harold Macmillan\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Harold Macmillan\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Alec Douglas-Home\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Harold Wilson\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Harold Wilson\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"Harold Wilson\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"Harold Wilson\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"Harold Wilson\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"Edward Heath\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"Edward Heath\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Edward Heath\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Edward Heath\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Harold Wilson\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Harold Wilson\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"James Callaghan\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"James Callaghan\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"James Callaghan\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Margaret Thatcher\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"John Major\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"John Major\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"John Major\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"John Major\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"John Major\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"John Major\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Tony Blair\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Tony Blair\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Tony Blair\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Tony Blair\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Tony Blair\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Tony Blair\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"David\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"David\",\"title\":\"Prime Minister\"}},\"Canada\":{\"1950\":{\"name\":\"Louis St. Laurent\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Louis St. Laurent\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Louis St. Laurent\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Louis St. Laurent\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Louis St. Laurent\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"Louis St. Laurent\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"Louis St. Laurent\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"John Diefenbaker\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"John Diefenbaker\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"John Diefenbaker\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"John Diefenbaker\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"John Diefenbaker\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"John Diefenbaker\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Lester B. Pearson\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Lester B. Pearson\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Lester B. Pearson\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Lester B. Pearson\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"Lester B. Pearson\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Joe Clark\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Pierre Trudeau\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"John Turner\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Brian Mulroney\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Brian Mulroney\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Brian Mulroney\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Brian Mulroney\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Brian Mulroney\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Brian Mulroney\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Brian Mulroney\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Brian Mulroney\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Kim Campbell\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Jean Chrétien\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Jean Chrétien\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"Jean Chrétien\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Jean Chrétien\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Jean Chrétien\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Jean Chrétien\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Jean Chrétien\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Jean Chrétien\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Jean Chrétien\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"Jean Chrétien\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"Paul Martin\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"Paul Martin\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"Stephen Harper\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"Stephen Harper\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"Stephen Harper\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"Stephen Harper\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Stephen Harper\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Stephen Harper\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Stephen Harper\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Stephen Harper\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Stephen Harper\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Stephen Harper\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Justin Trudeau\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Justin Trudeau\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Justin Trudeau\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Justin Trudeau\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Justin Trudeau\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Justin Trudeau\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Justin Trudeau\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Justin Trudeau\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Justin Trudeau\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Mark Carney\",\"title\":\"Prime Minister\"}},\"France\":{\"1950\":{\"name\":\"Vincent Auriol\",\"title\":\"President\"},\"1951\":{\"name\":\"Vincent Auriol\",\"title\":\"President\"},\"1952\":{\"name\":\"Vincent Auriol\",\"title\":\"President\"},\"1953\":{\"name\":\"Vincent Auriol\",\"title\":\"President\"},\"1954\":{\"name\":\"René Coty\",\"title\":\"President\"},\"1955\":{\"name\":\"René Coty\",\"title\":\"President\"},\"1956\":{\"name\":\"René Coty\",\"title\":\"President\"},\"1957\":{\"name\":\"René Coty\",\"title\":\"President\"},\"1958\":{\"name\":\"René Coty\",\"title\":\"President\"},\"1959\":{\"name\":\"Charles de Gaulle\",\"title\":\"President\"},\"1960\":{\"name\":\"Charles de Gaulle\",\"title\":\"President\"},\"1961\":{\"name\":\"Charles de Gaulle\",\"title\":\"President\"},\"1962\":{\"name\":\"Charles de Gaulle\",\"title\":\"President\"},\"1963\":{\"name\":\"Charles de Gaulle\",\"title\":\"President\"},\"1964\":{\"name\":\"Charles de Gaulle\",\"title\":\"President\"},\"1965\":{\"name\":\"Charles de Gaulle\",\"title\":\"President\"},\"1966\":{\"name\":\"Charles de Gaulle\",\"title\":\"President\"},\"1967\":{\"name\":\"Charles de Gaulle\",\"title\":\"President\"},\"1968\":{\"name\":\"Charles de Gaulle\",\"title\":\"President\"},\"1969\":{\"name\":\"Georges Pompidou\",\"title\":\"President\"},\"1970\":{\"name\":\"Georges Pompidou\",\"title\":\"President\"},\"1971\":{\"name\":\"Georges Pompidou\",\"title\":\"President\"},\"1972\":{\"name\":\"Georges Pompidou\",\"title\":\"President\"},\"1973\":{\"name\":\"Georges Pompidou\",\"title\":\"President\"},\"1974\":{\"name\":\"Valéry Giscard d'Estaing\",\"title\":\"President\"},\"1975\":{\"name\":\"Valéry Giscard d'Estaing\",\"title\":\"President\"},\"1976\":{\"name\":\"Valéry Giscard d'Estaing\",\"title\":\"President\"},\"1977\":{\"name\":\"Valéry Giscard d'Estaing\",\"title\":\"President\"},\"1978\":{\"name\":\"Valéry Giscard d'Estaing\",\"title\":\"President\"},\"1979\":{\"name\":\"Valéry Giscard d'Estaing\",\"title\":\"President\"},\"1980\":{\"name\":\"Valéry Giscard d'Estaing\",\"title\":\"President\"},\"1981\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1982\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1983\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1984\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1985\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1986\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1987\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1988\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1989\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1990\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1991\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1992\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1993\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1994\":{\"name\":\"François Mitterrand\",\"title\":\"President\"},\"1995\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"1996\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"1997\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"1998\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"1999\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"2000\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"2001\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"2002\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"2003\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"2004\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"2005\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"2006\":{\"name\":\"Jacques Chirac\",\"title\":\"President\"},\"2007\":{\"name\":\"Nicolas Sarkozy\",\"title\":\"President\"},\"2008\":{\"name\":\"Nicolas Sarkozy\",\"title\":\"President\"},\"2009\":{\"name\":\"Nicolas Sarkozy\",\"title\":\"President\"},\"2010\":{\"name\":\"Nicolas Sarkozy\",\"title\":\"President\"},\"2011\":{\"name\":\"Nicolas Sarkozy\",\"title\":\"President\"},\"2012\":{\"name\":\"François Hollande\",\"title\":\"President\"},\"2013\":{\"name\":\"François Hollande\",\"title\":\"President\"},\"2014\":{\"name\":\"François Hollande\",\"title\":\"President\"},\"2015\":{\"name\":\"François Hollande\",\"title\":\"President\"},\"2016\":{\"name\":\"François Hollande\",\"title\":\"President\"},\"2017\":{\"name\":\"Emmanuel Macron\",\"title\":\"President\"},\"2018\":{\"name\":\"Emmanuel Macron\",\"title\":\"President\"},\"2019\":{\"name\":\"Emmanuel Macron\",\"title\":\"President\"},\"2020\":{\"name\":\"Emmanuel Macron\",\"title\":\"President\"},\"2021\":{\"name\":\"Emmanuel Macron\",\"title\":\"President\"},\"2022\":{\"name\":\"Emmanuel Macron\",\"title\":\"President\"},\"2023\":{\"name\":\"Emmanuel Macron\",\"title\":\"President\"},\"2024\":{\"name\":\"Emmanuel Macron\",\"title\":\"President\"},\"2025\":{\"name\":\"Emmanuel Macron\",\"title\":\"President\"}},\"China\":{\"1955\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1956\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1957\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1958\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1959\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1960\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1961\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1962\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1963\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1964\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1965\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1966\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1967\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1968\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1969\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1970\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1971\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1972\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1973\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1974\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1975\":{\"name\":\"Zhou Enlai\",\"title\":\"Premier\"},\"1976\":{\"name\":\"Hua Guofeng\",\"title\":\"Premier\"},\"1977\":{\"name\":\"Hua Guofeng\",\"title\":\"Premier\"},\"1978\":{\"name\":\"Hua Guofeng\",\"title\":\"Premier\"},\"1979\":{\"name\":\"Hua Guofeng\",\"title\":\"Premier\"},\"1980\":{\"name\":\"Hua Guofeng\",\"title\":\"Premier\"},\"1988\":{\"name\":\"Li Peng\",\"title\":\"Premier\"},\"1989\":{\"name\":\"Li Peng\",\"title\":\"Premier\"},\"1990\":{\"name\":\"Li Peng\",\"title\":\"Premier\"},\"1991\":{\"name\":\"Li Peng\",\"title\":\"Premier\"},\"1992\":{\"name\":\"Li Peng\",\"title\":\"Premier\"},\"1993\":{\"name\":\"Li Peng\",\"title\":\"Premier\"},\"1994\":{\"name\":\"Li Peng\",\"title\":\"Premier\"},\"1995\":{\"name\":\"Li Peng\",\"title\":\"Premier\"},\"1996\":{\"name\":\"Li Peng\",\"title\":\"Premier\"},\"1997\":{\"name\":\"Li Peng\",\"title\":\"Premier\"},\"1998\":{\"name\":\"Zhu Rongji\",\"title\":\"Premier\"},\"1999\":{\"name\":\"Zhu Rongji\",\"title\":\"Premier\"},\"2000\":{\"name\":\"Zhu Rongji\",\"title\":\"Premier\"},\"2001\":{\"name\":\"Zhu Rongji\",\"title\":\"Premier\"},\"2002\":{\"name\":\"Zhu Rongji\",\"title\":\"Premier\"},\"2003\":{\"name\":\"Wen Jiabao\",\"title\":\"Premier\"},\"2004\":{\"name\":\"Wen Jiabao\",\"title\":\"Premier\"},\"2005\":{\"name\":\"Wen Jiabao\",\"title\":\"Premier\"},\"2006\":{\"name\":\"Wen Jiabao\",\"title\":\"Premier\"},\"2007\":{\"name\":\"Wen Jiabao\",\"title\":\"Premier\"},\"2008\":{\"name\":\"Wen Jiabao\",\"title\":\"Premier\"},\"2009\":{\"name\":\"Wen Jiabao\",\"title\":\"Premier\"},\"2010\":{\"name\":\"Wen Jiabao\",\"title\":\"Premier\"},\"2011\":{\"name\":\"Wen Jiabao\",\"title\":\"Premier\"},\"2012\":{\"name\":\"Wen Jiabao\",\"title\":\"Premier\"},\"2013\":{\"name\":\"Li Keqiang\",\"title\":\"Premier\"},\"2014\":{\"name\":\"Li Keqiang\",\"title\":\"Premier\"},\"2015\":{\"name\":\"Li Keqiang\",\"title\":\"Premier\"},\"2016\":{\"name\":\"Li Keqiang\",\"title\":\"Premier\"},\"2017\":{\"name\":\"Li Keqiang\",\"title\":\"Premier\"},\"2018\":{\"name\":\"Li Keqiang\",\"title\":\"Premier\"},\"2019\":{\"name\":\"Li Keqiang\",\"title\":\"Premier\"},\"2020\":{\"name\":\"Li Keqiang\",\"title\":\"Premier\"},\"2021\":{\"name\":\"Li Keqiang\",\"title\":\"Premier\"},\"2022\":{\"name\":\"Li Keqiang\",\"title\":\"Premier\"},\"2023\":{\"name\":\"Li Qiang\",\"title\":\"Premier\"},\"2024\":{\"name\":\"Li Qiang\",\"title\":\"Premier\"},\"2025\":{\"name\":\"Li Qiang\",\"title\":\"Premier\"}},\"Brazil\":{\"1950\":{\"name\":\"Eurico Gaspar Dutra\",\"title\":\"President\"},\"1951\":{\"name\":\"Getúlio Vargas\",\"title\":\"President\"},\"1952\":{\"name\":\"Getúlio Vargas\",\"title\":\"President\"},\"1953\":{\"name\":\"Getúlio Vargas\",\"title\":\"President\"},\"1954\":{\"name\":\"Getúlio Vargas\",\"title\":\"President\"},\"1955\":{\"name\":\"Café Filho\",\"title\":\"President\"},\"1956\":{\"name\":\"Juscelino Kubitschek\",\"title\":\"President\"},\"1957\":{\"name\":\"Juscelino Kubitschek\",\"title\":\"President\"},\"1958\":{\"name\":\"Juscelino Kubitschek\",\"title\":\"President\"},\"1959\":{\"name\":\"Juscelino Kubitschek\",\"title\":\"President\"},\"1960\":{\"name\":\"Juscelino Kubitschek\",\"title\":\"President\"},\"1961\":{\"name\":\"Jânio Quadros\",\"title\":\"President\"},\"1962\":{\"name\":\"João Goulart\",\"title\":\"President\"},\"1963\":{\"name\":\"João Goulart\",\"title\":\"President\"},\"1964\":{\"name\":\"Humberto Castelo Branco\",\"title\":\"President\"},\"1965\":{\"name\":\"Humberto Castelo Branco\",\"title\":\"President\"},\"1966\":{\"name\":\"Humberto Castelo Branco\",\"title\":\"President\"},\"1967\":{\"name\":\"Artur da Costa e Silva\",\"title\":\"President\"},\"1968\":{\"name\":\"Artur da Costa e Silva\",\"title\":\"President\"},\"1969\":{\"name\":\"Artur da Costa e Silva\",\"title\":\"President\"},\"1970\":{\"name\":\"Emílio Garrastazu Médici\",\"title\":\"President\"},\"1971\":{\"name\":\"Emílio Garrastazu Médici\",\"title\":\"President\"},\"1972\":{\"name\":\"Emílio Garrastazu Médici\",\"title\":\"President\"},\"1973\":{\"name\":\"Emílio Garrastazu Médici\",\"title\":\"President\"},\"1974\":{\"name\":\"Ernesto Geisel\",\"title\":\"President\"},\"1975\":{\"name\":\"Ernesto Geisel\",\"title\":\"President\"},\"1976\":{\"name\":\"Ernesto Geisel\",\"title\":\"President\"},\"1977\":{\"name\":\"Ernesto Geisel\",\"title\":\"President\"},\"1978\":{\"name\":\"Ernesto Geisel\",\"title\":\"President\"},\"1979\":{\"name\":\"João Figueiredo\",\"title\":\"President\"},\"1980\":{\"name\":\"João Figueiredo\",\"title\":\"President\"},\"1981\":{\"name\":\"João Figueiredo\",\"title\":\"President\"},\"1982\":{\"name\":\"João Figueiredo\",\"title\":\"President\"},\"1983\":{\"name\":\"João Figueiredo\",\"title\":\"President\"},\"1984\":{\"name\":\"João Figueiredo\",\"title\":\"President\"},\"1985\":{\"name\":\"José Sarney\",\"title\":\"President\"},\"1986\":{\"name\":\"José Sarney\",\"title\":\"President\"},\"1987\":{\"name\":\"José Sarney\",\"title\":\"President\"},\"1988\":{\"name\":\"José Sarney\",\"title\":\"President\"},\"1989\":{\"name\":\"José Sarney\",\"title\":\"President\"},\"1990\":{\"name\":\"Fernando Collor\",\"title\":\"President\"},\"1991\":{\"name\":\"Fernando Collor\",\"title\":\"President\"},\"1992\":{\"name\":\"Fernando Collor\",\"title\":\"President\"},\"1993\":{\"name\":\"Itamar Franco\",\"title\":\"President\"},\"1994\":{\"name\":\"Itamar Franco\",\"title\":\"President\"},\"1995\":{\"name\":\"Fernando Henrique Cardoso\",\"title\":\"President\"},\"1996\":{\"name\":\"Fernando Henrique Cardoso\",\"title\":\"President\"},\"1997\":{\"name\":\"Fernando Henrique Cardoso\",\"title\":\"President\"},\"1998\":{\"name\":\"Fernando Henrique Cardoso\",\"title\":\"President\"},\"1999\":{\"name\":\"Fernando Henrique Cardoso\",\"title\":\"President\"},\"2000\":{\"name\":\"Fernando Henrique Cardoso\",\"title\":\"President\"},\"2001\":{\"name\":\"Fernando Henrique Cardoso\",\"title\":\"President\"},\"2002\":{\"name\":\"Fernando Henrique Cardoso\",\"title\":\"President\"},\"2003\":{\"name\":\"Luiz Inácio Lula da Silva\",\"title\":\"President\"},\"2004\":{\"name\":\"Luiz Inácio Lula da Silva\",\"title\":\"President\"},\"2005\":{\"name\":\"Luiz Inácio Lula da Silva\",\"title\":\"President\"},\"2006\":{\"name\":\"Luiz Inácio Lula da Silva\",\"title\":\"President\"},\"2007\":{\"name\":\"Luiz Inácio Lula da Silva\",\"title\":\"President\"},\"2008\":{\"name\":\"Luiz Inácio Lula da Silva\",\"title\":\"President\"},\"2009\":{\"name\":\"Luiz Inácio Lula da Silva\",\"title\":\"President\"},\"2010\":{\"name\":\"Luiz Inácio Lula da Silva\",\"title\":\"President\"},\"2011\":{\"name\":\"Dilma Rousseff\",\"title\":\"President\"},\"2012\":{\"name\":\"Dilma Rousseff\",\"title\":\"President\"},\"2013\":{\"name\":\"Dilma Rousseff\",\"title\":\"President\"},\"2014\":{\"name\":\"Dilma Rousseff\",\"title\":\"President\"},\"2015\":{\"name\":\"Dilma Rousseff\",\"title\":\"President\"},\"2016\":{\"name\":\"Dilma Rousseff\",\"title\":\"President\"},\"2017\":{\"name\":\"Michel Temer\",\"title\":\"President\"},\"2018\":{\"name\":\"Michel Temer\",\"title\":\"President\"},\"2019\":{\"name\":\"Jair Bolsonaro\",\"title\":\"President\"},\"2020\":{\"name\":\"Jair Bolsonaro\",\"title\":\"President\"},\"2021\":{\"name\":\"Jair Bolsonaro\",\"title\":\"President\"},\"2022\":{\"name\":\"Jair Bolsonaro\",\"title\":\"President\"},\"2023\":{\"name\":\"Luiz Inácio Lula da Silva\",\"title\":\"President\"},\"2024\":{\"name\":\"Luiz Inácio Lula da Silva\",\"title\":\"President\"},\"2025\":{\"name\":\"Luiz Inácio Lula da Silva\",\"title\":\"President\"}},\"Mexico\":{\"1950\":{\"name\":\"Miguel Alemán Valdés\",\"title\":\"President\"},\"1951\":{\"name\":\"Miguel Alemán Valdés\",\"title\":\"President\"},\"1952\":{\"name\":\"Adolfo Ruiz Cortines\",\"title\":\"President\"},\"1953\":{\"name\":\"Adolfo Ruiz Cortines\",\"title\":\"President\"},\"1954\":{\"name\":\"Adolfo Ruiz Cortines\",\"title\":\"President\"},\"1955\":{\"name\":\"Adolfo Ruiz Cortines\",\"title\":\"President\"},\"1956\":{\"name\":\"Adolfo Ruiz Cortines\",\"title\":\"President\"},\"1957\":{\"name\":\"Adolfo Ruiz Cortines\",\"title\":\"President\"},\"1958\":{\"name\":\"Adolfo López Mateos\",\"title\":\"President\"},\"1959\":{\"name\":\"Adolfo López Mateos\",\"title\":\"President\"},\"1960\":{\"name\":\"Adolfo López Mateos\",\"title\":\"President\"},\"1961\":{\"name\":\"Adolfo López Mateos\",\"title\":\"President\"},\"1962\":{\"name\":\"Adolfo López Mateos\",\"title\":\"President\"},\"1963\":{\"name\":\"Adolfo López Mateos\",\"title\":\"President\"},\"1964\":{\"name\":\"Gustavo Díaz Ordaz\",\"title\":\"President\"},\"1965\":{\"name\":\"Gustavo Díaz Ordaz\",\"title\":\"President\"},\"1966\":{\"name\":\"Gustavo Díaz Ordaz\",\"title\":\"President\"},\"1967\":{\"name\":\"Gustavo Díaz Ordaz\",\"title\":\"President\"},\"1968\":{\"name\":\"Gustavo Díaz Ordaz\",\"title\":\"President\"},\"1969\":{\"name\":\"Gustavo Díaz Ordaz\",\"title\":\"President\"},\"1970\":{\"name\":\"Luis Echeverría\",\"title\":\"President\"},\"1971\":{\"name\":\"Luis Echeverría\",\"title\":\"President\"},\"1972\":{\"name\":\"Luis Echeverría\",\"title\":\"President\"},\"1973\":{\"name\":\"Luis Echeverría\",\"title\":\"President\"},\"1974\":{\"name\":\"Luis Echeverría\",\"title\":\"President\"},\"1975\":{\"name\":\"Luis Echeverría\",\"title\":\"President\"},\"1976\":{\"name\":\"José López Portillo\",\"title\":\"President\"},\"1977\":{\"name\":\"José López Portillo\",\"title\":\"President\"},\"1978\":{\"name\":\"José López Portillo\",\"title\":\"President\"},\"1979\":{\"name\":\"José López Portillo\",\"title\":\"President\"},\"1980\":{\"name\":\"José López Portillo\",\"title\":\"President\"},\"1981\":{\"name\":\"José López Portillo\",\"title\":\"President\"},\"1982\":{\"name\":\"Miguel de la Madrid\",\"title\":\"President\"},\"1983\":{\"name\":\"Miguel de la Madrid\",\"title\":\"President\"},\"1984\":{\"name\":\"Miguel de la Madrid\",\"title\":\"President\"},\"1985\":{\"name\":\"Miguel de la Madrid\",\"title\":\"President\"},\"1986\":{\"name\":\"Miguel de la Madrid\",\"title\":\"President\"},\"1987\":{\"name\":\"Miguel de la Madrid\",\"title\":\"President\"},\"1988\":{\"name\":\"Carlos Salinas de Gortari\",\"title\":\"President\"},\"1989\":{\"name\":\"Carlos Salinas de Gortari\",\"title\":\"President\"},\"1990\":{\"name\":\"Carlos Salinas de Gortari\",\"title\":\"President\"},\"1991\":{\"name\":\"Carlos Salinas de Gortari\",\"title\":\"President\"},\"1992\":{\"name\":\"Carlos Salinas de Gortari\",\"title\":\"President\"},\"1993\":{\"name\":\"Carlos Salinas de Gortari\",\"title\":\"President\"},\"1994\":{\"name\":\"Ernesto Zedillo\",\"title\":\"President\"},\"1995\":{\"name\":\"Ernesto Zedillo\",\"title\":\"President\"},\"1996\":{\"name\":\"Ernesto Zedillo\",\"title\":\"President\"},\"1997\":{\"name\":\"Ernesto Zedillo\",\"title\":\"President\"},\"1998\":{\"name\":\"Ernesto Zedillo\",\"title\":\"President\"},\"1999\":{\"name\":\"Ernesto Zedillo\",\"title\":\"President\"},\"2000\":{\"name\":\"Vicente Fox\",\"title\":\"President\"},\"2001\":{\"name\":\"Vicente Fox\",\"title\":\"President\"},\"2002\":{\"name\":\"Vicente Fox\",\"title\":\"President\"},\"2003\":{\"name\":\"Vicente Fox\",\"title\":\"President\"},\"2004\":{\"name\":\"Vicente Fox\",\"title\":\"President\"},\"2005\":{\"name\":\"Vicente Fox\",\"title\":\"President\"},\"2006\":{\"name\":\"Felipe Calderón\",\"title\":\"President\"},\"2007\":{\"name\":\"Felipe Calderón\",\"title\":\"President\"},\"2008\":{\"name\":\"Felipe Calderón\",\"title\":\"President\"},\"2009\":{\"name\":\"Felipe Calderón\",\"title\":\"President\"},\"2010\":{\"name\":\"Felipe Calderón\",\"title\":\"President\"},\"2011\":{\"name\":\"Felipe Calderón\",\"title\":\"President\"},\"2012\":{\"name\":\"Enrique Peña Nieto\",\"title\":\"President\"},\"2013\":{\"name\":\"Enrique Peña Nieto\",\"title\":\"President\"},\"2014\":{\"name\":\"Enrique Peña Nieto\",\"title\":\"President\"},\"2015\":{\"name\":\"Enrique Peña Nieto\",\"title\":\"President\"},\"2016\":{\"name\":\"Enrique Peña Nieto\",\"title\":\"President\"},\"2017\":{\"name\":\"Enrique Peña Nieto\",\"title\":\"President\"},\"2018\":{\"name\":\"Andrés Manuel López Obrador\",\"title\":\"President\"},\"2019\":{\"name\":\"Andrés Manuel López Obrador\",\"title\":\"President\"},\"2020\":{\"name\":\"Andrés Manuel López Obrador\",\"title\":\"President\"},\"2021\":{\"name\":\"Andrés Manuel López Obrador\",\"title\":\"President\"},\"2022\":{\"name\":\"Andrés Manuel López Obrador\",\"title\":\"President\"},\"2023\":{\"name\":\"Andrés Manuel López Obrador\",\"title\":\"President\"},\"2024\":{\"name\":\"Claudia Sheinbaum\",\"title\":\"President\"},\"2025\":{\"name\":\"Claudia Sheinbaum\",\"title\":\"President\"}},\"Russia\":{\"1992\":{\"name\":\"Boris Yeltsin\",\"title\":\"President\"},\"1993\":{\"name\":\"Boris Yeltsin\",\"title\":\"President\"},\"1994\":{\"name\":\"Boris Yeltsin\",\"title\":\"President\"},\"1995\":{\"name\":\"Boris Yeltsin\",\"title\":\"President\"},\"1996\":{\"name\":\"Boris Yeltsin\",\"title\":\"President\"},\"1997\":{\"name\":\"Boris Yeltsin\",\"title\":\"President\"},\"1998\":{\"name\":\"Boris Yeltsin\",\"title\":\"President\"},\"1999\":{\"name\":\"Boris Yeltsin\",\"title\":\"President\"},\"2000\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2001\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2002\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2003\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2004\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2005\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2006\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2007\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2008\":{\"name\":\"Dmitry Medvedev\",\"title\":\"President\"},\"2009\":{\"name\":\"Dmitry Medvedev\",\"title\":\"President\"},\"2010\":{\"name\":\"Dmitry Medvedev\",\"title\":\"President\"},\"2011\":{\"name\":\"Dmitry Medvedev\",\"title\":\"President\"},\"2012\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2013\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2014\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2015\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2016\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2017\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2018\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2019\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2020\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2021\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2022\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2023\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2024\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"},\"2025\":{\"name\":\"Vladimir Putin\",\"title\":\"President\"}},\"Indonesia\":{\"1950\":{\"name\":\"Assaat\",\"title\":\"President\"},\"1951\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1952\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1953\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1954\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1955\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1956\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1957\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1958\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1959\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1960\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1961\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1962\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1963\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1964\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1965\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1966\":{\"name\":\"Sukarno\",\"title\":\"President\"},\"1967\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1968\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1969\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1970\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1971\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1972\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1973\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1974\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1975\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1976\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1977\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1978\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1979\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1980\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1981\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1982\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1983\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1984\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1985\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1986\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1987\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1988\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1989\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1990\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1991\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1992\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1993\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1994\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1995\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1996\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1997\":{\"name\":\"Suharto\",\"title\":\"President\"},\"1998\":{\"name\":\"B. J. Habibie\",\"title\":\"President\"},\"1999\":{\"name\":\"B. J. Habibie\",\"title\":\"President\"},\"2000\":{\"name\":\"Abdurrahman Wahid\",\"title\":\"President\"},\"2001\":{\"name\":\"Abdurrahman Wahid\",\"title\":\"President\"},\"2002\":{\"name\":\"Megawati Soekarnoputri\",\"title\":\"President\"},\"2003\":{\"name\":\"Megawati Soekarnoputri\",\"title\":\"President\"},\"2004\":{\"name\":\"Megawati Soekarnoputri\",\"title\":\"President\"},\"2005\":{\"name\":\"Susilo Bambang Yudhoyono\",\"title\":\"President\"},\"2006\":{\"name\":\"Susilo Bambang Yudhoyono\",\"title\":\"President\"},\"2007\":{\"name\":\"Susilo Bambang Yudhoyono\",\"title\":\"President\"},\"2008\":{\"name\":\"Susilo Bambang Yudhoyono\",\"title\":\"President\"},\"2009\":{\"name\":\"Susilo Bambang Yudhoyono\",\"title\":\"President\"},\"2010\":{\"name\":\"Susilo Bambang Yudhoyono\",\"title\":\"President\"},\"2011\":{\"name\":\"Susilo Bambang Yudhoyono\",\"title\":\"President\"},\"2012\":{\"name\":\"Susilo Bambang Yudhoyono\",\"title\":\"President\"},\"2013\":{\"name\":\"Susilo Bambang Yudhoyono\",\"title\":\"President\"},\"2014\":{\"name\":\"Susilo Bambang Yudhoyono\",\"title\":\"President\"},\"2015\":{\"name\":\"Joko Widodo\",\"title\":\"President\"},\"2016\":{\"name\":\"Joko Widodo\",\"title\":\"President\"},\"2017\":{\"name\":\"Joko Widodo\",\"title\":\"President\"},\"2018\":{\"name\":\"Joko Widodo\",\"title\":\"President\"},\"2019\":{\"name\":\"Joko Widodo\",\"title\":\"President\"},\"2020\":{\"name\":\"Joko Widodo\",\"title\":\"President\"},\"2021\":{\"name\":\"Joko Widodo\",\"title\":\"President\"},\"2022\":{\"name\":\"Joko Widodo\",\"title\":\"President\"},\"2023\":{\"name\":\"Joko Widodo\",\"title\":\"President\"},\"2024\":{\"name\":\"Joko Widodo\",\"title\":\"President\"},\"2025\":{\"name\":\"Prabowo Subianto\",\"title\":\"President\"}},\"Turkey\":{\"1950\":{\"name\":\"Celâl Bayar\",\"title\":\"President\"},\"1951\":{\"name\":\"Celâl Bayar\",\"title\":\"President\"},\"1952\":{\"name\":\"Celâl Bayar\",\"title\":\"President\"},\"1953\":{\"name\":\"Celâl Bayar\",\"title\":\"President\"},\"1954\":{\"name\":\"Celâl Bayar\",\"title\":\"President\"},\"1955\":{\"name\":\"Celâl Bayar\",\"title\":\"President\"},\"1956\":{\"name\":\"Celâl Bayar\",\"title\":\"President\"},\"1957\":{\"name\":\"Celâl Bayar\",\"title\":\"President\"},\"1958\":{\"name\":\"Celâl Bayar\",\"title\":\"President\"},\"1959\":{\"name\":\"Celâl Bayar\",\"title\":\"President\"},\"1962\":{\"name\":\"Cemal Gürsel\",\"title\":\"President\"},\"1963\":{\"name\":\"Cemal Gürsel\",\"title\":\"President\"},\"1964\":{\"name\":\"Cemal Gürsel\",\"title\":\"President\"},\"1965\":{\"name\":\"Cemal Gürsel\",\"title\":\"President\"},\"1966\":{\"name\":\"Cevdet Sunay\",\"title\":\"President\"},\"1967\":{\"name\":\"Cevdet Sunay\",\"title\":\"President\"},\"1968\":{\"name\":\"Cevdet Sunay\",\"title\":\"President\"},\"1969\":{\"name\":\"Cevdet Sunay\",\"title\":\"President\"},\"1970\":{\"name\":\"Cevdet Sunay\",\"title\":\"President\"},\"1971\":{\"name\":\"Cevdet Sunay\",\"title\":\"President\"},\"1972\":{\"name\":\"Cevdet Sunay\",\"title\":\"President\"},\"1973\":{\"name\":\"Fahri Korutürk\",\"title\":\"President\"},\"1974\":{\"name\":\"Fahri Korutürk\",\"title\":\"President\"},\"1975\":{\"name\":\"Fahri Korutürk\",\"title\":\"President\"},\"1976\":{\"name\":\"Fahri Korutürk\",\"title\":\"President\"},\"1977\":{\"name\":\"Fahri Korutürk\",\"title\":\"President\"},\"1978\":{\"name\":\"Fahri Korutürk\",\"title\":\"President\"},\"1979\":{\"name\":\"Fahri Korutürk\",\"title\":\"President\"},\"1980\":{\"name\":\"İhsan Sabri Çağlayangil\",\"title\":\"President\"},\"1981\":{\"name\":\"Kenan Evren\",\"title\":\"President\"},\"1982\":{\"name\":\"Kenan Evren\",\"title\":\"President\"},\"1983\":{\"name\":\"Kenan Evren\",\"title\":\"President\"},\"1984\":{\"name\":\"Kenan Evren\",\"title\":\"President\"},\"1985\":{\"name\":\"Kenan Evren\",\"title\":\"President\"},\"1986\":{\"name\":\"Kenan Evren\",\"title\":\"President\"},\"1987\":{\"name\":\"Kenan Evren\",\"title\":\"President\"},\"1988\":{\"name\":\"Kenan Evren\",\"title\":\"President\"},\"1989\":{\"name\":\"Kenan Evren\",\"title\":\"President\"},\"1990\":{\"name\":\"Turgut Özal\",\"title\":\"President\"},\"1991\":{\"name\":\"Turgut Özal\",\"title\":\"President\"},\"1992\":{\"name\":\"Turgut Özal\",\"title\":\"President\"},\"1993\":{\"name\":\"Süleyman Demirel\",\"title\":\"President\"},\"1994\":{\"name\":\"Süleyman Demirel\",\"title\":\"President\"},\"1995\":{\"name\":\"Süleyman Demirel\",\"title\":\"President\"},\"1996\":{\"name\":\"Süleyman Demirel\",\"title\":\"President\"},\"1997\":{\"name\":\"Süleyman Demirel\",\"title\":\"President\"},\"1998\":{\"name\":\"Süleyman Demirel\",\"title\":\"President\"},\"1999\":{\"name\":\"Süleyman Demirel\",\"title\":\"President\"},\"2000\":{\"name\":\"Ahmet Necdet Sezer\",\"title\":\"President\"},\"2001\":{\"name\":\"Ahmet Necdet Sezer\",\"title\":\"President\"},\"2002\":{\"name\":\"Ahmet Necdet Sezer\",\"title\":\"President\"},\"2003\":{\"name\":\"Ahmet Necdet Sezer\",\"title\":\"President\"},\"2004\":{\"name\":\"Ahmet Necdet Sezer\",\"title\":\"President\"},\"2005\":{\"name\":\"Ahmet Necdet Sezer\",\"title\":\"President\"},\"2006\":{\"name\":\"Ahmet Necdet Sezer\",\"title\":\"President\"},\"2007\":{\"name\":\"Ahmet Necdet Sezer\",\"title\":\"President\"},\"2008\":{\"name\":\"Abdullah Gül\",\"title\":\"President\"},\"2009\":{\"name\":\"Abdullah Gül\",\"title\":\"President\"},\"2010\":{\"name\":\"Abdullah Gül\",\"title\":\"President\"},\"2011\":{\"name\":\"Abdullah Gül\",\"title\":\"President\"},\"2012\":{\"name\":\"Abdullah Gül\",\"title\":\"President\"},\"2013\":{\"name\":\"Abdullah Gül\",\"title\":\"President\"},\"2014\":{\"name\":\"Abdullah Gül\",\"title\":\"President\"},\"2015\":{\"name\":\"Recep Tayyip Erdoğan\",\"title\":\"President\"},\"2016\":{\"name\":\"Recep Tayyip Erdoğan\",\"title\":\"President\"},\"2017\":{\"name\":\"Recep Tayyip Erdoğan\",\"title\":\"President\"},\"2018\":{\"name\":\"Recep Tayyip Erdoğan\",\"title\":\"President\"},\"2019\":{\"name\":\"Recep Tayyip Erdoğan\",\"title\":\"President\"},\"2020\":{\"name\":\"Recep Tayyip Erdoğan\",\"title\":\"President\"},\"2021\":{\"name\":\"Recep Tayyip Erdoğan\",\"title\":\"President\"},\"2022\":{\"name\":\"Recep Tayyip Erdoğan\",\"title\":\"President\"},\"2023\":{\"name\":\"Recep Tayyip Erdoğan\",\"title\":\"President\"},\"2024\":{\"name\":\"Recep Tayyip Erdoğan\",\"title\":\"President\"},\"2025\":{\"name\":\"Recep Tayyip Erdoğan\",\"title\":\"President\"}},\"Netherlands\":{\"1950\":{\"name\":\"Willem Drees\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Willem Drees\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Willem Drees\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Willem Drees\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Willem Drees\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"Willem Drees\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"Willem Drees\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"Willem Drees\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"Willem Drees\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"Jan Eduard de Quay\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"Jan Eduard de Quay\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"Jan Eduard de Quay\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"Jan Eduard de Quay\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Jan Eduard de Quay\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Victor Marijnen\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Jo Cals\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Jo Cals\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"Piet de Jong\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"Piet de Jong\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"Piet de Jong\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"Piet de Jong\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"Piet de Jong\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Barend Biesheuvel\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Joop den Uyl\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Joop den Uyl\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Joop den Uyl\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Joop den Uyl\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Joop den Uyl\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Dries van Agt\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Dries van Agt\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Dries van Agt\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Dries van Agt\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Dries van Agt\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Ruud Lubbers\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Wim Kok\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"Wim Kok\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Wim Kok\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Wim Kok\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Wim Kok\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Wim Kok\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Wim Kok\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Wim Kok\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"Jan Peter Balkenende\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"Jan Peter Balkenende\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"Jan Peter Balkenende\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"Jan Peter Balkenende\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"Jan Peter Balkenende\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"Jan Peter Balkenende\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"Jan Peter Balkenende\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Jan Peter Balkenende\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Mark Rutte\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Dick Schoof\",\"title\":\"Prime Minister\"}},\"New Zealand\":{\"1950\":{\"name\":\"Sidney Holland\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Sidney Holland\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Sidney Holland\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Sidney Holland\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Sidney Holland\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"Sidney Holland\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"Sidney Holland\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"Sidney Holland\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"Walter Nash\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"Walter Nash\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"Walter Nash\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"Keith Holyoake\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"Keith Holyoake\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Keith Holyoake\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Keith Holyoake\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Keith Holyoake\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Keith Holyoake\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"Keith Holyoake\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"Keith Holyoake\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"Keith Holyoake\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"Keith Holyoake\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"Keith Holyoake\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Jack Marshall\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Norman Kirk\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Norman Kirk\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Bill Rowling\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Robert Muldoon\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Robert Muldoon\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Robert Muldoon\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Robert Muldoon\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Robert Muldoon\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Robert Muldoon\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Robert Muldoon\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Robert Muldoon\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Robert Muldoon\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"David Lange\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"David Lange\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"David Lange\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"David Lange\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"David Lange\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Geoffrey Palmer\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Jim Bolger\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Jim Bolger\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Jim Bolger\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Jim Bolger\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Jim Bolger\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"Jim Bolger\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Jim Bolger\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Jenny Shipley\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Jenny Shipley\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Helen Clark\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Helen Clark\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Helen Clark\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"Helen Clark\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"Helen Clark\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"Helen Clark\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"Helen Clark\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"Helen Clark\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"Helen Clark\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"John Key\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"John Key\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"John Key\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"John Key\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"John Key\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"John Key\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"John Key\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"John Key\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Bill English\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Jacinda Ardern\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Jacinda Ardern\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Jacinda Ardern\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Jacinda Ardern\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Jacinda Ardern\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Chris Hipkins\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Christopher Luxon\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Christopher Luxon\",\"title\":\"Prime Minister\"}},\"United Arab Emirates\":{\"1972\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1973\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1974\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1975\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1976\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1977\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1978\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1979\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1980\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1981\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1982\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1983\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1984\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1985\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1986\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1987\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1988\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1989\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1990\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1991\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1992\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1993\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1994\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1995\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1996\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1997\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1998\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"1999\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"2000\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"2001\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"2002\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"2003\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"2004\":{\"name\":\"Zayed bin Sultan Al Nahyan\",\"title\":\"President\"},\"2005\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2006\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2007\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2008\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2009\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2010\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2011\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2012\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2013\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2014\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2015\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2016\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2017\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2018\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2019\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2020\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2021\":{\"name\":\"Khalifa bin Zayed Al Nahyan\",\"title\":\"President\"},\"2022\":{\"name\":\"Mohammed Bin Zayed Al Nahyan\",\"title\":\"President\"},\"2023\":{\"name\":\"Mohammed Bin Zayed Al Nahyan\",\"title\":\"President\"},\"2024\":{\"name\":\"Mohammed Bin Zayed Al Nahyan\",\"title\":\"President\"},\"2025\":{\"name\":\"Mohammed Bin Zayed Al Nahyan\",\"title\":\"President\"}},\"Norway\":{\"1950\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Oscar Torp\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Oscar Torp\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Oscar Torp\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Einar Gerhardsen\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Per Borten\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"Per Borten\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"Per Borten\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"Per Borten\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"Per Borten\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"Trygve Bratteli\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Trygve Bratteli\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Lars Korvald\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Trygve Bratteli\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Trygve Bratteli\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Odvar Nordli\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Odvar Nordli\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Odvar Nordli\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Odvar Nordli\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Odvar Nordli\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Gro Harlem Brundtland\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Kåre Willoch\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Kåre Willoch\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Kåre Willoch\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Kåre Willoch\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Gro Harlem Brundtland\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Gro Harlem Brundtland\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Gro Harlem Brundtland\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Gro Harlem Brundtland\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Jan P. Syse\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Gro Harlem Brundtland\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Gro Harlem Brundtland\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Gro Harlem Brundtland\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Gro Harlem Brundtland\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Gro Harlem Brundtland\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"Gro Harlem Brundtland\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Thorbjørn Jagland\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Kjell Magne Bondevik\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Kjell Magne Bondevik\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Jens Stoltenberg\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Jens Stoltenberg\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Kjell Magne Bondevik\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"Kjell Magne Bondevik\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"Kjell Magne Bondevik\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"Kjell Magne Bondevik\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"Jens Stoltenberg\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"Jens Stoltenberg\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"Jens Stoltenberg\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"Jens Stoltenberg\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Jens Stoltenberg\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Jens Stoltenberg\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Jens Stoltenberg\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Jens Stoltenberg\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Erna Solberg\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Erna Solberg\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Erna Solberg\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Erna Solberg\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Erna Solberg\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Erna Solberg\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Erna Solberg\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Erna Solberg\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Jonas Gahr Støre\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Jonas Gahr Støre\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Jonas Gahr Støre\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Jonas Gahr Støre\",\"title\":\"Prime Minister\"}},\"Denmark\":{\"1950\":{\"name\":\"Hans Hedtoft\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Erik Eriksen\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Erik Eriksen\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Erik Eriksen\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Hans Hedtoft\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"H. C. Hansen\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"H. C. Hansen\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"H. C. Hansen\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"H. C. Hansen\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"H. C. Hansen\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"Viggo Kampmann\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"Viggo Kampmann\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"Viggo Kampmann\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Jens Otto Krag\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Jens Otto Krag\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Jens Otto Krag\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Jens Otto Krag\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"Jens Otto Krag\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"Hilmar Baunsgaard\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"Hilmar Baunsgaard\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"Hilmar Baunsgaard\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"Hilmar Baunsgaard\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Jens Otto Krag\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Anker Jørgensen\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Poul Hartling\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Anker Jørgensen\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Anker Jørgensen\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Anker Jørgensen\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Anker Jørgensen\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Anker Jørgensen\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Anker Jørgensen\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Anker Jørgensen\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Anker Jørgensen\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Poul Schlüter\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Poul Schlüter\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Poul Schlüter\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Poul Schlüter\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Poul Schlüter\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Poul Schlüter\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Poul Schlüter\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Poul Schlüter\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Poul Schlüter\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Poul Schlüter\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Poul Nyrup Rasmussen\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Poul Nyrup Rasmussen\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Poul Nyrup Rasmussen\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"Poul Nyrup Rasmussen\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Poul Nyrup Rasmussen\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Poul Nyrup Rasmussen\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Poul Nyrup Rasmussen\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Poul Nyrup Rasmussen\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Poul Nyrup Rasmussen\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Anders Fogh Rasmussen\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"Anders Fogh Rasmussen\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"Anders Fogh Rasmussen\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"Anders Fogh Rasmussen\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"Anders Fogh Rasmussen\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"Anders Fogh Rasmussen\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"Anders Fogh Rasmussen\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"Lars Løkke Rasmussen\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Lars Løkke Rasmussen\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Lars Løkke Rasmussen\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Helle Thorning-Schmidt\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Helle Thorning-Schmidt\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Helle Thorning-Schmidt\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Lars Løkke Rasmussen\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Lars Løkke Rasmussen\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Lars Løkke Rasmussen\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Lars Løkke Rasmussen\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Mette Frederiksen\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Mette Frederiksen\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Mette Frederiksen\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Mette Frederiksen\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Mette Frederiksen\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Mette Frederiksen\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Mette Frederiksen\",\"title\":\"Prime Minister\"}},\"Hong Kong\":{\"2005\":{\"name\":\"Donald Tsang\",\"title\":\"Chief Executive\"},\"2006\":{\"name\":\"Donald Tsang\",\"title\":\"Chief Executive\"},\"2007\":{\"name\":\"Donald Tsang\",\"title\":\"Chief Executive\"},\"2008\":{\"name\":\"Donald Tsang\",\"title\":\"Chief Executive\"},\"2009\":{\"name\":\"Donald Tsang\",\"title\":\"Chief Executive\"},\"2010\":{\"name\":\"Donald Tsang\",\"title\":\"Chief Executive\"},\"2011\":{\"name\":\"Donald Tsang\",\"title\":\"Chief Executive\"},\"2012\":{\"name\":\"CY Leung\",\"title\":\"Chief Executive\"},\"2013\":{\"name\":\"CY Leung\",\"title\":\"Chief Executive\"},\"2014\":{\"name\":\"CY Leung\",\"title\":\"Chief Executive\"},\"2015\":{\"name\":\"CY Leung\",\"title\":\"Chief Executive\"},\"2016\":{\"name\":\"CY Leung\",\"title\":\"Chief Executive\"},\"2017\":{\"name\":\"Carrie Lam\",\"title\":\"Chief Executive\"},\"2018\":{\"name\":\"Carrie Lam\",\"title\":\"Chief Executive\"},\"2019\":{\"name\":\"Carrie Lam\",\"title\":\"Chief Executive\"},\"2020\":{\"name\":\"Carrie Lam\",\"title\":\"Chief Executive\"},\"2021\":{\"name\":\"Carrie Lam\",\"title\":\"Chief Executive\"},\"2022\":{\"name\":\"John Lee\",\"title\":\"Chief Executive\"},\"2023\":{\"name\":\"John Lee\",\"title\":\"Chief Executive\"},\"2024\":{\"name\":\"John Lee\",\"title\":\"Chief Executive\"},\"2025\":{\"name\":\"John Lee\",\"title\":\"Chief Executive\"}},\"Taiwan\":{\"1950\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1951\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1952\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1953\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1954\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1955\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1956\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1957\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1958\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1959\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1960\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1961\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1962\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1963\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1964\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1965\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1966\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1967\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1968\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1969\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1970\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1971\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1972\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1973\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1974\":{\"name\":\"Chiang Kai-shek\",\"title\":\"President\"},\"1975\":{\"name\":\"Yen Chia-kan\",\"title\":\"President\"},\"1976\":{\"name\":\"Yen Chia-kan\",\"title\":\"President\"},\"1977\":{\"name\":\"Yen Chia-kan\",\"title\":\"President\"},\"1978\":{\"name\":\"Chiang Ching-kuo\",\"title\":\"President\"},\"1979\":{\"name\":\"Chiang Ching-kuo\",\"title\":\"President\"},\"1980\":{\"name\":\"Chiang Ching-kuo\",\"title\":\"President\"},\"1981\":{\"name\":\"Chiang Ching-kuo\",\"title\":\"President\"},\"1982\":{\"name\":\"Chiang Ching-kuo\",\"title\":\"President\"},\"1983\":{\"name\":\"Chiang Ching-kuo\",\"title\":\"President\"},\"1984\":{\"name\":\"Chiang Ching-kuo\",\"title\":\"President\"},\"1985\":{\"name\":\"Chiang Ching-kuo\",\"title\":\"President\"},\"1986\":{\"name\":\"Chiang Ching-kuo\",\"title\":\"President\"},\"1987\":{\"name\":\"Chiang Ching-kuo\",\"title\":\"President\"},\"1988\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"1989\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"1990\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"1991\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"1992\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"1993\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"1994\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"1995\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"1996\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"1997\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"1998\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"1999\":{\"name\":\"Lee Teng-hui\",\"title\":\"President\"},\"2000\":{\"name\":\"Chen Shui-bian\",\"title\":\"President\"},\"2001\":{\"name\":\"Chen Shui-bian\",\"title\":\"President\"},\"2002\":{\"name\":\"Chen Shui-bian\",\"title\":\"President\"},\"2003\":{\"name\":\"Chen Shui-bian\",\"title\":\"President\"},\"2004\":{\"name\":\"Chen Shui-bian\",\"title\":\"President\"},\"2005\":{\"name\":\"Chen Shui-bian\",\"title\":\"President\"},\"2006\":{\"name\":\"Chen Shui-bian\",\"title\":\"President\"},\"2007\":{\"name\":\"Chen Shui-bian\",\"title\":\"President\"},\"2008\":{\"name\":\"Ma Ying-jeou\",\"title\":\"President\"},\"2009\":{\"name\":\"Ma Ying-jeou\",\"title\":\"President\"},\"2010\":{\"name\":\"Ma Ying-jeou\",\"title\":\"President\"},\"2011\":{\"name\":\"Ma Ying-jeou\",\"title\":\"President\"},\"2012\":{\"name\":\"Ma Ying-jeou\",\"title\":\"President\"},\"2013\":{\"name\":\"Ma Ying-jeou\",\"title\":\"President\"},\"2014\":{\"name\":\"Ma Ying-jeou\",\"title\":\"President\"},\"2015\":{\"name\":\"Ma Ying-jeou\",\"title\":\"President\"},\"2016\":{\"name\":\"Tsai Ing-wen\",\"title\":\"President\"},\"2017\":{\"name\":\"Tsai Ing-wen\",\"title\":\"President\"},\"2018\":{\"name\":\"Tsai Ing-wen\",\"title\":\"President\"},\"2019\":{\"name\":\"Tsai Ing-wen\",\"title\":\"President\"},\"2020\":{\"name\":\"Tsai Ing-wen\",\"title\":\"President\"},\"2021\":{\"name\":\"Tsai Ing-wen\",\"title\":\"President\"},\"2022\":{\"name\":\"Tsai Ing-wen\",\"title\":\"President\"},\"2023\":{\"name\":\"Tsai Ing-wen\",\"title\":\"President\"},\"2024\":{\"name\":\"Lai Ching-te\",\"title\":\"President\"},\"2025\":{\"name\":\"Lai Ching-te\",\"title\":\"President\"}},\"India\":{\"1950\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Jawaharlal Nehru\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Lal Bahadur Shastri\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Lal Bahadur Shastri\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Morarji Desai\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Morarji Desai\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Charan Singh\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Indira Gandhi\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Rajiv Gandhi\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Rajiv Gandhi\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Rajiv Gandhi\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Rajiv Gandhi\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Rajiv Gandhi\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"V. P. Singh\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Chandra Shekhar\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"P. V. Narasimha Rao\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"P. V. Narasimha Rao\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"P. V. Narasimha Rao\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"P. V. Narasimha Rao\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"P. V. Narasimha Rao\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"H. D. Deve Gowda\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"I. K. Gujral\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Atal Bihari Vajpayee\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Atal Bihari Vajpayee\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Atal Bihari Vajpayee\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Atal Bihari Vajpayee\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Atal Bihari Vajpayee\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"Atal Bihari Vajpayee\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"Manmohan Singh\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"Manmohan Singh\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"Manmohan Singh\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"Manmohan Singh\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"Manmohan Singh\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"Manmohan Singh\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Manmohan Singh\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Manmohan Singh\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Manmohan Singh\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Manmohan Singh\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Narendra Modi\",\"title\":\"Prime Minister\"}},\"Pakistan\":{\"1950\":{\"name\":\"Liaquat Ali Khan\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Khawaja Nazimuddin\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Khawaja Nazimuddin\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Mohammad Ali Bogra\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Mohammad Ali Bogra\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"Chaudhry Muhammad Ali\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"Huseyn Shaheed Suhrawardy\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"I. I. Chundrigar\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"Feroz Khan Noon\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"Ayub Khan\",\"title\":\"President\"},\"1960\":{\"name\":\"Ayub Khan\",\"title\":\"President\"},\"1961\":{\"name\":\"Ayub Khan\",\"title\":\"President\"},\"1962\":{\"name\":\"Ayub Khan\",\"title\":\"President\"},\"1963\":{\"name\":\"Ayub Khan\",\"title\":\"President\"},\"1964\":{\"name\":\"Ayub Khan\",\"title\":\"President\"},\"1965\":{\"name\":\"Ayub Khan\",\"title\":\"President\"},\"1966\":{\"name\":\"Ayub Khan\",\"title\":\"President\"},\"1967\":{\"name\":\"Ayub Khan\",\"title\":\"President\"},\"1968\":{\"name\":\"Ayub Khan\",\"title\":\"President\"},\"1969\":{\"name\":\"Yahya Khan\",\"title\":\"President\"},\"1970\":{\"name\":\"Yahya Khan\",\"title\":\"President\"},\"1971\":{\"name\":\"Zulfikar Ali Bhutto\",\"title\":\"President\"},\"1972\":{\"name\":\"Zulfikar Ali Bhutto\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Zulfikar Ali Bhutto\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Zulfikar Ali Bhutto\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Zulfikar Ali Bhutto\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Zulfikar Ali Bhutto\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Zulfikar Ali Bhutto\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Muhammad Zia-ul-Haq\",\"title\":\"President\"},\"1979\":{\"name\":\"Muhammad Zia-ul-Haq\",\"title\":\"President\"},\"1980\":{\"name\":\"Muhammad Zia-ul-Haq\",\"title\":\"President\"},\"1981\":{\"name\":\"Muhammad Zia-ul-Haq\",\"title\":\"President\"},\"1982\":{\"name\":\"Muhammad Zia-ul-Haq\",\"title\":\"President\"},\"1983\":{\"name\":\"Muhammad Zia-ul-Haq\",\"title\":\"President\"},\"1984\":{\"name\":\"Muhammad Zia-ul-Haq\",\"title\":\"President\"},\"1985\":{\"name\":\"Muhammad Zia-ul-Haq\",\"title\":\"President\"},\"1986\":{\"name\":\"Muhammad Zia-ul-Haq\",\"title\":\"President\"},\"1987\":{\"name\":\"Muhammad Zia-ul-Haq\",\"title\":\"President\"},\"1988\":{\"name\":\"Benazir Bhutto\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Benazir Bhutto\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Nawaz Sharif\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Nawaz Sharif\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Nawaz Sharif\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Benazir Bhutto\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Benazir Bhutto\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Benazir Bhutto\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"Benazir Bhutto\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Nawaz Sharif\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Nawaz Sharif\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Pervez Musharraf\",\"title\":\"Chief Executive\"},\"2000\":{\"name\":\"Pervez Musharraf\",\"title\":\"Chief Executive\"},\"2001\":{\"name\":\"Pervez Musharraf\",\"title\":\"Chief Executive\"},\"2002\":{\"name\":\"Pervez Musharraf\",\"title\":\"President\"},\"2003\":{\"name\":\"Pervez Musharraf\",\"title\":\"President\"},\"2004\":{\"name\":\"Pervez Musharraf\",\"title\":\"President\"},\"2005\":{\"name\":\"Pervez Musharraf\",\"title\":\"President\"},\"2006\":{\"name\":\"Pervez Musharraf\",\"title\":\"President\"},\"2007\":{\"name\":\"Pervez Musharraf\",\"title\":\"President\"},\"2008\":{\"name\":\"Yousaf Raza Gillani\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"Yousaf Raza Gillani\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Yousaf Raza Gillani\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Yousaf Raza Gillani\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Yousaf Raza Gillani\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Nawaz Sharif\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Nawaz Sharif\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Nawaz Sharif\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Nawaz Sharif\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Shahid Khaqan Abbasi\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Imran Khan\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Imran Khan\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Imran Khan\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Imran Khan\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Shehbaz Sharif\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Shehbaz Sharif\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Shehbaz Sharif\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Shehbaz Sharif\",\"title\":\"Prime Minister\"}},\"Australia\":{\"1950\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Robert Menzies\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Harold Holt\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"John McEwen\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"John Gorton\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"John Gorton\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"John Gorton\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"William McMahon\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Gough Whitlam\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Gough Whitlam\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Gough Whitlam\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Malcolm Fraser\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Malcolm Fraser\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Malcolm Fraser\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Malcolm Fraser\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Malcolm Fraser\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Malcolm Fraser\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Malcolm Fraser\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Malcolm Fraser\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Bob Hawke\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Bob Hawke\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Bob Hawke\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Bob Hawke\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Bob Hawke\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Bob Hawke\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Bob Hawke\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Bob Hawke\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Paul Keating\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Paul Keating\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Paul Keating\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Paul Keating\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Paul Keating\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"John Howard\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"John Howard\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"John Howard\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"John Howard\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"John Howard\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"John Howard\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"John Howard\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"John Howard\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"John Howard\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"John Howard\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"John Howard\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"Kevin Rudd\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"Kevin Rudd\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"Kevin Rudd\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Julia Gillard\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Julia Gillard\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Julia Gillard\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Kevin Rudd\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Tony Abbott\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Malcolm Turnbull\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Malcolm Turnbull\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Malcolm Turnbull\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Scott Morrison\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Scott Morrison\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Scott Morrison\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Scott Morrison\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Anthony Albanese\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Anthony Albanese\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Anthony Albanese\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Anthony Albanese\",\"title\":\"Prime Minister\"}},\"Germany\":{\"1950\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1951\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1952\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1953\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1954\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1955\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1956\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1957\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1958\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1959\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1960\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1961\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1962\":{\"name\":\"Konrad Adenauer\",\"title\":\"Chancellor\"},\"1963\":{\"name\":\"Ludwig Erhard\",\"title\":\"Chancellor\"},\"1964\":{\"name\":\"Ludwig Erhard\",\"title\":\"Chancellor\"},\"1965\":{\"name\":\"Ludwig Erhard\",\"title\":\"Chancellor\"},\"1966\":{\"name\":\"Kurt Georg Kiesinger\",\"title\":\"Chancellor\"},\"1967\":{\"name\":\"Kurt Georg Kiesinger\",\"title\":\"Chancellor\"},\"1968\":{\"name\":\"Kurt Georg Kiesinger\",\"title\":\"Chancellor\"},\"1969\":{\"name\":\"Willy Brandt\",\"title\":\"Chancellor\"},\"1970\":{\"name\":\"Willy Brandt\",\"title\":\"Chancellor\"},\"1971\":{\"name\":\"Willy Brandt\",\"title\":\"Chancellor\"},\"1972\":{\"name\":\"Willy Brandt\",\"title\":\"Chancellor\"},\"1973\":{\"name\":\"Willy Brandt\",\"title\":\"Chancellor\"},\"1974\":{\"name\":\"Helmut Schmidt\",\"title\":\"Chancellor\"},\"1975\":{\"name\":\"Helmut Schmidt\",\"title\":\"Chancellor\"},\"1976\":{\"name\":\"Helmut Schmidt\",\"title\":\"Chancellor\"},\"1977\":{\"name\":\"Helmut Schmidt\",\"title\":\"Chancellor\"},\"1978\":{\"name\":\"Helmut Schmidt\",\"title\":\"Chancellor\"},\"1979\":{\"name\":\"Helmut Schmidt\",\"title\":\"Chancellor\"},\"1980\":{\"name\":\"Helmut Schmidt\",\"title\":\"Chancellor\"},\"1981\":{\"name\":\"Helmut Schmidt\",\"title\":\"Chancellor\"},\"1982\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1983\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1984\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1985\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1986\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1987\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1988\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1989\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1990\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1991\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1992\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1993\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1994\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1995\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1996\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1997\":{\"name\":\"Helmut Kohl\",\"title\":\"Chancellor\"},\"1998\":{\"name\":\"Gerhard Schröder\",\"title\":\"Chancellor\"},\"1999\":{\"name\":\"Gerhard Schröder\",\"title\":\"Chancellor\"},\"2000\":{\"name\":\"Gerhard Schröder\",\"title\":\"Chancellor\"},\"2001\":{\"name\":\"Gerhard Schröder\",\"title\":\"Chancellor\"},\"2002\":{\"name\":\"Gerhard Schröder\",\"title\":\"Chancellor\"},\"2003\":{\"name\":\"Gerhard Schröder\",\"title\":\"Chancellor\"},\"2004\":{\"name\":\"Gerhard Schröder\",\"title\":\"Chancellor\"},\"2005\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2006\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2007\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2008\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2009\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2010\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2011\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2012\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2013\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2014\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2015\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2016\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2017\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2018\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2019\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2020\":{\"name\":\"Angela Merkel\",\"title\":\"Chancellor\"},\"2021\":{\"name\":\"Olaf Scholz\",\"title\":\"Chancellor\"},\"2022\":{\"name\":\"Olaf Scholz\",\"title\":\"Chancellor\"},\"2023\":{\"name\":\"Olaf Scholz\",\"title\":\"Chancellor\"},\"2024\":{\"name\":\"Olaf Scholz\",\"title\":\"Chancellor\"},\"2025\":{\"name\":\"Friedrich Merz\",\"title\":\"Chancellor\"}},\"Japan\":{\"1950\":{\"name\":\"Shigeru Yoshida\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Shigeru Yoshida\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Shigeru Yoshida\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Shigeru Yoshida\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Ichirō Hatoyama\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"Ichirō Hatoyama\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"Tanzan Ishibashi\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"Nobusuke Kishi\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"Nobusuke Kishi\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"Nobusuke Kishi\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"Hayato Ikeda\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"Hayato Ikeda\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"Hayato Ikeda\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Hayato Ikeda\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Eisaku Satō\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Eisaku Satō\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Eisaku Satō\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"Eisaku Satō\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"Eisaku Satō\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"Eisaku Satō\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"Eisaku Satō\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"Eisaku Satō\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Kakuei Tanaka\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Kakuei Tanaka\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Takeo Miki\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Takeo Miki\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Takeo Fukuda\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Takeo Fukuda\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Masayoshi Ōhira\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Masayoshi Ōhira\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Zenkō Suzuki\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Zenkō Suzuki\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Yasuhiro Nakasone\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Yasuhiro Nakasone\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Yasuhiro Nakasone\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Yasuhiro Nakasone\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Yasuhiro Nakasone\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Noboru Takeshita\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Noboru Takeshita\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Toshiki Kaifu\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Toshiki Kaifu\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Kiichi Miyazawa\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Kiichi Miyazawa\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Morihiro Hosokawa\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Tomiichi Murayama\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Ryūtarō Hashimoto\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"Ryūtarō Hashimoto\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Ryūtarō Hashimoto\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Keizō Obuchi\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Keizō Obuchi\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Yoshirō Mori\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Junichirō Koizumi\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Junichirō Koizumi\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"Junichirō Koizumi\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"Junichirō Koizumi\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"Junichirō Koizumi\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"Shinzō Abe\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"Yasuo Fukuda\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"Tarō Asō\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"Yukio Hatoyama\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Naoto Kan\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Yoshihiko Noda\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Shinzō Abe\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Shinzō Abe\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Shinzō Abe\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Shinzō Abe\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Shinzō Abe\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Shinzō Abe\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Shinzō Abe\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Shinzō Abe\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Yoshihide Suga\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Fumio Kishida\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Fumio Kishida\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Fumio Kishida\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Shigeru Ishiba\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Shigeru Ishiba\",\"title\":\"Prime Minister\"}},\"Italy\":{\"1950\":{\"name\":\"Alcide De Gasperi\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Alcide De Gasperi\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Alcide De Gasperi\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Giuseppe Pella\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Mario Scelba\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"Antonio Segni\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"Antonio Segni\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"Adone Zoli\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"Amintore Fanfani\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"Antonio Segni\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"Amintore Fanfani\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"Amintore Fanfani\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"Amintore Fanfani\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Aldo Moro\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Aldo Moro\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Aldo Moro\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Aldo Moro\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"Aldo Moro\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"Mariano Rumor\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"Mariano Rumor\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"Emilio Colombo\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"Emilio Colombo\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Giulio Andreotti\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Mariano Rumor\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Aldo Moro\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Aldo Moro\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Giulio Andreotti\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Giulio Andreotti\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Giulio Andreotti\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Francesco Cossiga\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Francesco Cossiga\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Giovanni Spadolini\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Amintore Fanfani\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Bettino Craxi\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Bettino Craxi\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Bettino Craxi\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Bettino Craxi\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Amintore Fanfani\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Ciriaco De Mita\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Giulio Andreotti\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Giulio Andreotti\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Giulio Andreotti\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Giuliano Amato\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Carlo Azeglio Ciampi\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Silvio Berlusconi\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Lamberto Dini\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"Romano Prodi\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Romano Prodi\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Massimo D'Alema\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Massimo D'Alema\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Giuliano Amato\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Silvio Berlusconi\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Silvio Berlusconi\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"Silvio Berlusconi\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"Silvio Berlusconi\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"Silvio Berlusconi\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"Romano Prodi\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"Romano Prodi\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"Silvio Berlusconi\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"Silvio Berlusconi\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Silvio Berlusconi\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Mario Monti\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Mario Monti\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Enrico Letta\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Matteo Renzi\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Matteo Renzi\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Paolo Gentiloni\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Paolo Gentiloni\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Giuseppe Conte\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Giuseppe Conte\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Giuseppe Conte\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Mario Draghi\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Giorgia Meloni\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Giorgia Meloni\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Giorgia Meloni\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Giorgia Meloni\",\"title\":\"Prime Minister\"}},\"Spain\":{\"1950\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1951\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1952\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1953\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1954\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1955\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1956\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1957\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1958\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1959\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1960\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1961\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1962\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1963\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1964\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1965\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1966\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1967\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1968\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1969\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1970\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1971\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1972\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1973\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1974\":{\"name\":\"Francisco Franco\",\"title\":\"Head of State\"},\"1975\":{\"name\":\"Carlos Arias Navarro\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Adolfo Suárez\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Adolfo Suárez\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Adolfo Suárez\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Adolfo Suárez\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Adolfo Suárez\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Leopoldo Calvo-Sotelo\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Felipe González\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"José María Aznar\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"José María Aznar\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"José María Aznar\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"José María Aznar\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"José María Aznar\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"José María Aznar\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"José María Aznar\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"José María Aznar\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"José Luis Rodríguez Zapatero\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"José Luis Rodríguez Zapatero\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"José Luis Rodríguez Zapatero\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"José Luis Rodríguez Zapatero\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"José Luis Rodríguez Zapatero\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"José Luis Rodríguez Zapatero\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"José Luis Rodríguez Zapatero\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Mariano Rajoy\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Mariano Rajoy\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Mariano Rajoy\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Mariano Rajoy\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Mariano Rajoy\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Mariano Rajoy\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Mariano Rajoy\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Pedro Sánchez\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Pedro Sánchez\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Pedro Sánchez\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Pedro Sánchez\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Pedro Sánchez\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Pedro Sánchez\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Pedro Sánchez\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Pedro Sánchez\",\"title\":\"Prime Minister\"}},\"South Korea\":{\"1950\":{\"name\":\"Syngman Rhee\",\"title\":\"President\"},\"1951\":{\"name\":\"Syngman Rhee\",\"title\":\"President\"},\"1952\":{\"name\":\"Syngman Rhee\",\"title\":\"President\"},\"1953\":{\"name\":\"Syngman Rhee\",\"title\":\"President\"},\"1954\":{\"name\":\"Syngman Rhee\",\"title\":\"President\"},\"1955\":{\"name\":\"Syngman Rhee\",\"title\":\"President\"},\"1956\":{\"name\":\"Syngman Rhee\",\"title\":\"President\"},\"1957\":{\"name\":\"Syngman Rhee\",\"title\":\"President\"},\"1958\":{\"name\":\"Syngman Rhee\",\"title\":\"President\"},\"1959\":{\"name\":\"Syngman Rhee\",\"title\":\"President\"},\"1960\":{\"name\":\"Yun Posun\",\"title\":\"President\"},\"1961\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1962\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1963\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1964\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1965\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1966\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1967\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1968\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1969\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1970\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1971\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1972\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1973\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1974\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1975\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1976\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1977\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1978\":{\"name\":\"Park Chung-hee\",\"title\":\"President\"},\"1979\":{\"name\":\"Choi Kyu-hah\",\"title\":\"President\"},\"1980\":{\"name\":\"Chun Doo-hwan\",\"title\":\"President\"},\"1981\":{\"name\":\"Chun Doo-hwan\",\"title\":\"President\"},\"1982\":{\"name\":\"Chun Doo-hwan\",\"title\":\"President\"},\"1983\":{\"name\":\"Chun Doo-hwan\",\"title\":\"President\"},\"1984\":{\"name\":\"Chun Doo-hwan\",\"title\":\"President\"},\"1985\":{\"name\":\"Chun Doo-hwan\",\"title\":\"President\"},\"1986\":{\"name\":\"Chun Doo-hwan\",\"title\":\"President\"},\"1987\":{\"name\":\"Chun Doo-hwan\",\"title\":\"President\"},\"1988\":{\"name\":\"Roh Tae-woo\",\"title\":\"President\"},\"1989\":{\"name\":\"Roh Tae-woo\",\"title\":\"President\"},\"1990\":{\"name\":\"Roh Tae-woo\",\"title\":\"President\"},\"1991\":{\"name\":\"Roh Tae-woo\",\"title\":\"President\"},\"1992\":{\"name\":\"Roh Tae-woo\",\"title\":\"President\"},\"1993\":{\"name\":\"Kim Young-sam\",\"title\":\"President\"},\"1994\":{\"name\":\"Kim Young-sam\",\"title\":\"President\"},\"1995\":{\"name\":\"Kim Young-sam\",\"title\":\"President\"},\"1996\":{\"name\":\"Kim Young-sam\",\"title\":\"President\"},\"1997\":{\"name\":\"Kim Young-sam\",\"title\":\"President\"},\"1998\":{\"name\":\"Kim Dae-jung\",\"title\":\"President\"},\"1999\":{\"name\":\"Kim Dae-jung\",\"title\":\"President\"},\"2000\":{\"name\":\"Kim Dae-jung\",\"title\":\"President\"},\"2001\":{\"name\":\"Kim Dae-jung\",\"title\":\"President\"},\"2002\":{\"name\":\"Kim Dae-jung\",\"title\":\"President\"},\"2003\":{\"name\":\"Roh Moo-hyun\",\"title\":\"President\"},\"2004\":{\"name\":\"Roh Moo-hyun\",\"title\":\"President\"},\"2005\":{\"name\":\"Roh Moo-hyun\",\"title\":\"President\"},\"2006\":{\"name\":\"Roh Moo-hyun\",\"title\":\"President\"},\"2007\":{\"name\":\"Roh Moo-hyun\",\"title\":\"President\"},\"2008\":{\"name\":\"Lee Myung-bak\",\"title\":\"President\"},\"2009\":{\"name\":\"Lee Myung-bak\",\"title\":\"President\"},\"2010\":{\"name\":\"Lee Myung-bak\",\"title\":\"President\"},\"2011\":{\"name\":\"Lee Myung-bak\",\"title\":\"President\"},\"2012\":{\"name\":\"Lee Myung-bak\",\"title\":\"President\"},\"2013\":{\"name\":\"Park Geun-hye\",\"title\":\"President\"},\"2014\":{\"name\":\"Park Geun-hye\",\"title\":\"President\"},\"2015\":{\"name\":\"Park Geun-hye\",\"title\":\"President\"},\"2016\":{\"name\":\"Park Geun-hye\",\"title\":\"President\"},\"2017\":{\"name\":\"Moon Jae-in\",\"title\":\"President\"},\"2018\":{\"name\":\"Moon Jae-in\",\"title\":\"President\"},\"2019\":{\"name\":\"Moon Jae-in\",\"title\":\"President\"},\"2020\":{\"name\":\"Moon Jae-in\",\"title\":\"President\"},\"2021\":{\"name\":\"Moon Jae-in\",\"title\":\"President\"},\"2022\":{\"name\":\"Yoon Suk Yeol\",\"title\":\"President\"},\"2023\":{\"name\":\"Yoon Suk Yeol\",\"title\":\"President\"},\"2024\":{\"name\":\"Yoon Suk Yeol\",\"title\":\"President\"},\"2025\":{\"name\":\"Lee Jae-myung\",\"title\":\"President\"}},\"Israel\":{\"1950\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Moshe Sharett\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"David Ben-Gurion\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Levi Eshkol\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Levi Eshkol\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Levi Eshkol\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Levi Eshkol\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"Levi Eshkol\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"Levi Eshkol\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"Golda Meir\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"Golda Meir\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"Golda Meir\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Golda Meir\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Golda Meir\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Yitzhak Rabin\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Yitzhak Rabin\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Yitzhak Rabin\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Menachem Begin\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Menachem Begin\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Menachem Begin\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Menachem Begin\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Menachem Begin\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Menachem Begin\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Yitzhak Shamir\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Shimon Peres\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Shimon Peres\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Yitzhak Shamir\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Yitzhak Shamir\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Yitzhak Shamir\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Yitzhak Shamir\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Yitzhak Shamir\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Yitzhak Shamir\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Yitzhak Rabin\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Yitzhak Rabin\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Yitzhak Rabin\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Shimon Peres\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Ehud Barak\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Ehud Barak\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Ariel Sharon\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Ariel Sharon\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"Ariel Sharon\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"Ariel Sharon\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"Ariel Sharon\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"Ehud Olmert\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"Ehud Olmert\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"Ehud Olmert\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Naftali Bennett\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Yair Lapid\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Benjamin Netanyahu\",\"title\":\"Prime Minister\"}},\"Ireland\":{\"1950\":{\"name\":\"Éamon de Valera\",\"title\":\"Taoiseach\"},\"1951\":{\"name\":\"Éamon de Valera\",\"title\":\"Taoiseach\"},\"1952\":{\"name\":\"Éamon de Valera\",\"title\":\"Taoiseach\"},\"1953\":{\"name\":\"Éamon de Valera\",\"title\":\"Taoiseach\"},\"1954\":{\"name\":\"John A. Costello\",\"title\":\"Taoiseach\"},\"1955\":{\"name\":\"John A. Costello\",\"title\":\"Taoiseach\"},\"1956\":{\"name\":\"John A. Costello\",\"title\":\"Taoiseach\"},\"1957\":{\"name\":\"Éamon de Valera\",\"title\":\"Taoiseach\"},\"1958\":{\"name\":\"Éamon de Valera\",\"title\":\"Taoiseach\"},\"1959\":{\"name\":\"Seán Lemass\",\"title\":\"Taoiseach\"},\"1960\":{\"name\":\"Seán Lemass\",\"title\":\"Taoiseach\"},\"1961\":{\"name\":\"Seán Lemass\",\"title\":\"Taoiseach\"},\"1962\":{\"name\":\"Seán Lemass\",\"title\":\"Taoiseach\"},\"1963\":{\"name\":\"Seán Lemass\",\"title\":\"Taoiseach\"},\"1964\":{\"name\":\"Seán Lemass\",\"title\":\"Taoiseach\"},\"1965\":{\"name\":\"Seán Lemass\",\"title\":\"Taoiseach\"},\"1966\":{\"name\":\"Jack Lynch\",\"title\":\"Taoiseach\"},\"1967\":{\"name\":\"Jack Lynch\",\"title\":\"Taoiseach\"},\"1968\":{\"name\":\"Jack Lynch\",\"title\":\"Taoiseach\"},\"1969\":{\"name\":\"Jack Lynch\",\"title\":\"Taoiseach\"},\"1970\":{\"name\":\"Jack Lynch\",\"title\":\"Taoiseach\"},\"1971\":{\"name\":\"Jack Lynch\",\"title\":\"Taoiseach\"},\"1972\":{\"name\":\"Jack Lynch\",\"title\":\"Taoiseach\"},\"1973\":{\"name\":\"Liam Cosgrave\",\"title\":\"Taoiseach\"},\"1974\":{\"name\":\"Liam Cosgrave\",\"title\":\"Taoiseach\"},\"1975\":{\"name\":\"Liam Cosgrave\",\"title\":\"Taoiseach\"},\"1976\":{\"name\":\"Liam Cosgrave\",\"title\":\"Taoiseach\"},\"1977\":{\"name\":\"Jack Lynch\",\"title\":\"Taoiseach\"},\"1978\":{\"name\":\"Jack Lynch\",\"title\":\"Taoiseach\"},\"1979\":{\"name\":\"Charles Haughey\",\"title\":\"Taoiseach\"},\"1980\":{\"name\":\"Charles Haughey\",\"title\":\"Taoiseach\"},\"1981\":{\"name\":\"Garret FitzGerald\",\"title\":\"Taoiseach\"},\"1982\":{\"name\":\"Charles Haughey\",\"title\":\"Taoiseach\"},\"1983\":{\"name\":\"Garret FitzGerald\",\"title\":\"Taoiseach\"},\"1984\":{\"name\":\"Garret FitzGerald\",\"title\":\"Taoiseach\"},\"1985\":{\"name\":\"Garret FitzGerald\",\"title\":\"Taoiseach\"},\"1986\":{\"name\":\"Garret FitzGerald\",\"title\":\"Taoiseach\"},\"1987\":{\"name\":\"Charles Haughey\",\"title\":\"Taoiseach\"},\"1988\":{\"name\":\"Charles Haughey\",\"title\":\"Taoiseach\"},\"1989\":{\"name\":\"Charles Haughey\",\"title\":\"Taoiseach\"},\"1990\":{\"name\":\"Charles Haughey\",\"title\":\"Taoiseach\"},\"1991\":{\"name\":\"Charles Haughey\",\"title\":\"Taoiseach\"},\"1992\":{\"name\":\"Albert Reynolds\",\"title\":\"Taoiseach\"},\"1993\":{\"name\":\"Albert Reynolds\",\"title\":\"Taoiseach\"},\"1994\":{\"name\":\"John Bruton\",\"title\":\"Taoiseach\"},\"1995\":{\"name\":\"John Bruton\",\"title\":\"Taoiseach\"},\"1996\":{\"name\":\"John Bruton\",\"title\":\"Taoiseach\"},\"1997\":{\"name\":\"Bertie Ahern\",\"title\":\"Taoiseach\"},\"1998\":{\"name\":\"Bertie Ahern\",\"title\":\"Taoiseach\"},\"1999\":{\"name\":\"Bertie Ahern\",\"title\":\"Taoiseach\"},\"2000\":{\"name\":\"Bertie Ahern\",\"title\":\"Taoiseach\"},\"2001\":{\"name\":\"Bertie Ahern\",\"title\":\"Taoiseach\"},\"2002\":{\"name\":\"Bertie Ahern\",\"title\":\"Taoiseach\"},\"2003\":{\"name\":\"Bertie Ahern\",\"title\":\"Taoiseach\"},\"2004\":{\"name\":\"Bertie Ahern\",\"title\":\"Taoiseach\"},\"2005\":{\"name\":\"Bertie Ahern\",\"title\":\"Taoiseach\"},\"2006\":{\"name\":\"Bertie Ahern\",\"title\":\"Taoiseach\"},\"2007\":{\"name\":\"Bertie Ahern\",\"title\":\"Taoiseach\"},\"2008\":{\"name\":\"Brian Cowen\",\"title\":\"Taoiseach\"},\"2009\":{\"name\":\"Brian Cowen\",\"title\":\"Taoiseach\"},\"2010\":{\"name\":\"Brian Cowen\",\"title\":\"Taoiseach\"},\"2011\":{\"name\":\"Enda Kenny\",\"title\":\"Taoiseach\"},\"2012\":{\"name\":\"Enda Kenny\",\"title\":\"Taoiseach\"},\"2013\":{\"name\":\"Enda Kenny\",\"title\":\"Taoiseach\"},\"2014\":{\"name\":\"Enda Kenny\",\"title\":\"Taoiseach\"},\"2015\":{\"name\":\"Enda Kenny\",\"title\":\"Taoiseach\"},\"2016\":{\"name\":\"Enda Kenny\",\"title\":\"Taoiseach\"},\"2017\":{\"name\":\"Leo Varadkar\",\"title\":\"Taoiseach\"},\"2018\":{\"name\":\"Leo Varadkar\",\"title\":\"Taoiseach\"},\"2019\":{\"name\":\"Leo Varadkar\",\"title\":\"Taoiseach\"},\"2020\":{\"name\":\"Micheál Martin\",\"title\":\"Taoiseach\"},\"2021\":{\"name\":\"Micheál Martin\",\"title\":\"Taoiseach\"},\"2022\":{\"name\":\"Leo Varadkar\",\"title\":\"Taoiseach\"},\"2023\":{\"name\":\"Leo Varadkar\",\"title\":\"Taoiseach\"},\"2024\":{\"name\":\"Simon Harris\",\"title\":\"Taoiseach\"},\"2025\":{\"name\":\"Simon Harris\",\"title\":\"Taoiseach\"}},\"Sweden\":{\"1950\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"Tage Erlander\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"Olof Palme\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"Olof Palme\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"Olof Palme\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Olof Palme\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Olof Palme\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Olof Palme\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Olof Palme\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"Thorbjörn Fälldin\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"Thorbjörn Fälldin\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"Ola Ullsten\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"Thorbjörn Fälldin\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"Thorbjörn Fälldin\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"Thorbjörn Fälldin\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"Olof Palme\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"Olof Palme\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"Olof Palme\",\"title\":\"Prime Minister\"},\"1985\":{\"name\":\"Olof Palme\",\"title\":\"Prime Minister\"},\"1986\":{\"name\":\"Ingvar Carlsson\",\"title\":\"Prime Minister\"},\"1987\":{\"name\":\"Ingvar Carlsson\",\"title\":\"Prime Minister\"},\"1988\":{\"name\":\"Ingvar Carlsson\",\"title\":\"Prime Minister\"},\"1989\":{\"name\":\"Ingvar Carlsson\",\"title\":\"Prime Minister\"},\"1990\":{\"name\":\"Ingvar Carlsson\",\"title\":\"Prime Minister\"},\"1991\":{\"name\":\"Carl Bildt\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Carl Bildt\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Carl Bildt\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Ingvar Carlsson\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Ingvar Carlsson\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"Göran Persson\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Göran Persson\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Göran Persson\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Göran Persson\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Göran Persson\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Göran Persson\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Göran Persson\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"Göran Persson\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"Göran Persson\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"Göran Persson\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"Fredrik Reinfeldt\",\"title\":\"Prime Minister\"},\"2007\":{\"name\":\"Fredrik Reinfeldt\",\"title\":\"Prime Minister\"},\"2008\":{\"name\":\"Fredrik Reinfeldt\",\"title\":\"Prime Minister\"},\"2009\":{\"name\":\"Fredrik Reinfeldt\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Fredrik Reinfeldt\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Fredrik Reinfeldt\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Fredrik Reinfeldt\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Fredrik Reinfeldt\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Stefan Löfven\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Stefan Löfven\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Stefan Löfven\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Stefan Löfven\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Stefan Löfven\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Stefan Löfven\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Stefan Löfven\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Stefan Löfven\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Ulf Kristersson\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Ulf Kristersson\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Ulf Kristersson\",\"title\":\"Prime Minister\"},\"2025\":{\"name\":\"Ulf Kristersson\",\"title\":\"Prime Minister\"}},\"Bangladesh\":{\"1971\":{\"name\":\"Sheikh Mujibur Rahman\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"Sheikh Mujibur Rahman\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"Sheikh Mujibur Rahman\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"Sheikh Mujibur Rahman\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"Sheikh Mujibur Rahman\",\"title\":\"President\"},\"1976\":{\"name\":\"Ziaur Rahman\",\"title\":\"President\"},\"1977\":{\"name\":\"Ziaur Rahman\",\"title\":\"President\"},\"1978\":{\"name\":\"Ziaur Rahman\",\"title\":\"President\"},\"1979\":{\"name\":\"Ziaur Rahman\",\"title\":\"President\"},\"1980\":{\"name\":\"Ziaur Rahman\",\"title\":\"President\"},\"1981\":{\"name\":\"Abdus Sattar\",\"title\":\"President\"},\"1982\":{\"name\":\"Hussain Muhammad Ershad\",\"title\":\"President\"},\"1983\":{\"name\":\"Hussain Muhammad Ershad\",\"title\":\"President\"},\"1984\":{\"name\":\"Hussain Muhammad Ershad\",\"title\":\"President\"},\"1985\":{\"name\":\"Hussain Muhammad Ershad\",\"title\":\"President\"},\"1986\":{\"name\":\"Hussain Muhammad Ershad\",\"title\":\"President\"},\"1987\":{\"name\":\"Hussain Muhammad Ershad\",\"title\":\"President\"},\"1988\":{\"name\":\"Hussain Muhammad Ershad\",\"title\":\"President\"},\"1989\":{\"name\":\"Hussain Muhammad Ershad\",\"title\":\"President\"},\"1990\":{\"name\":\"Shahabuddin Ahmed\",\"title\":\"Acting President\"},\"1991\":{\"name\":\"Khaleda Zia\",\"title\":\"Prime Minister\"},\"1992\":{\"name\":\"Khaleda Zia\",\"title\":\"Prime Minister\"},\"1993\":{\"name\":\"Khaleda Zia\",\"title\":\"Prime Minister\"},\"1994\":{\"name\":\"Khaleda Zia\",\"title\":\"Prime Minister\"},\"1995\":{\"name\":\"Khaleda Zia\",\"title\":\"Prime Minister\"},\"1996\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"1997\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"1998\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"1999\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2000\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2001\":{\"name\":\"Khaleda Zia\",\"title\":\"Prime Minister\"},\"2002\":{\"name\":\"Khaleda Zia\",\"title\":\"Prime Minister\"},\"2003\":{\"name\":\"Khaleda Zia\",\"title\":\"Prime Minister\"},\"2004\":{\"name\":\"Khaleda Zia\",\"title\":\"Prime Minister\"},\"2005\":{\"name\":\"Khaleda Zia\",\"title\":\"Prime Minister\"},\"2006\":{\"name\":\"Fakhruddin Ahmed\",\"title\":\"Chief Adviser\"},\"2007\":{\"name\":\"Fakhruddin Ahmed\",\"title\":\"Chief Adviser\"},\"2008\":{\"name\":\"Fakhruddin Ahmed\",\"title\":\"Chief Adviser\"},\"2009\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2010\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2011\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2012\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2013\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2014\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2015\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2016\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2017\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2018\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2019\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2020\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2021\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2022\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2023\":{\"name\":\"Sheikh Hasina\",\"title\":\"Prime Minister\"},\"2024\":{\"name\":\"Muhammad Yunus\",\"title\":\"Chief Adviser\"},\"2025\":{\"name\":\"Muhammad Yunus\",\"title\":\"Chief Adviser\"}},\"South Africa\":{\"1950\":{\"name\":\"D. F. Malan\",\"title\":\"Prime Minister\"},\"1951\":{\"name\":\"D. F. Malan\",\"title\":\"Prime Minister\"},\"1952\":{\"name\":\"D. F. Malan\",\"title\":\"Prime Minister\"},\"1953\":{\"name\":\"D. F. Malan\",\"title\":\"Prime Minister\"},\"1954\":{\"name\":\"J. G. Strijdom\",\"title\":\"Prime Minister\"},\"1955\":{\"name\":\"J. G. Strijdom\",\"title\":\"Prime Minister\"},\"1956\":{\"name\":\"J. G. Strijdom\",\"title\":\"Prime Minister\"},\"1957\":{\"name\":\"J. G. Strijdom\",\"title\":\"Prime Minister\"},\"1958\":{\"name\":\"Hendrik Verwoerd\",\"title\":\"Prime Minister\"},\"1959\":{\"name\":\"Hendrik Verwoerd\",\"title\":\"Prime Minister\"},\"1960\":{\"name\":\"Hendrik Verwoerd\",\"title\":\"Prime Minister\"},\"1961\":{\"name\":\"Hendrik Verwoerd\",\"title\":\"Prime Minister\"},\"1962\":{\"name\":\"Hendrik Verwoerd\",\"title\":\"Prime Minister\"},\"1963\":{\"name\":\"Hendrik Verwoerd\",\"title\":\"Prime Minister\"},\"1964\":{\"name\":\"Hendrik Verwoerd\",\"title\":\"Prime Minister\"},\"1965\":{\"name\":\"Hendrik Verwoerd\",\"title\":\"Prime Minister\"},\"1966\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1967\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1968\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1969\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1970\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1971\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1972\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1973\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1974\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1975\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1976\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1977\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1978\":{\"name\":\"John Vorster\",\"title\":\"Prime Minister\"},\"1979\":{\"name\":\"P. W. Botha\",\"title\":\"Prime Minister\"},\"1980\":{\"name\":\"P. W. Botha\",\"title\":\"Prime Minister\"},\"1981\":{\"name\":\"P. W. Botha\",\"title\":\"Prime Minister\"},\"1982\":{\"name\":\"P. W. Botha\",\"title\":\"Prime Minister\"},\"1983\":{\"name\":\"P. W. Botha\",\"title\":\"Prime Minister\"},\"1984\":{\"name\":\"P. W. Botha\",\"title\":\"State President\"},\"1985\":{\"name\":\"P. W. Botha\",\"title\":\"State President\"},\"1986\":{\"name\":\"P. W. Botha\",\"title\":\"State President\"},\"1987\":{\"name\":\"P. W. Botha\",\"title\":\"State President\"},\"1988\":{\"name\":\"P. W. Botha\",\"title\":\"State President\"},\"1989\":{\"name\":\"F. W. de Klerk\",\"title\":\"State President\"},\"1990\":{\"name\":\"F. W. de Klerk\",\"title\":\"State President\"},\"1991\":{\"name\":\"F. W. de Klerk\",\"title\":\"State President\"},\"1992\":{\"name\":\"F. W. de Klerk\",\"title\":\"State President\"},\"1993\":{\"name\":\"F. W. de Klerk\",\"title\":\"State President\"},\"1994\":{\"name\":\"Nelson Mandela\",\"title\":\"President\"},\"1995\":{\"name\":\"Nelson Mandela\",\"title\":\"President\"},\"1996\":{\"name\":\"Nelson Mandela\",\"title\":\"President\"},\"1997\":{\"name\":\"Nelson Mandela\",\"title\":\"President\"},\"1998\":{\"name\":\"Nelson Mandela\",\"title\":\"President\"},\"1999\":{\"name\":\"Thabo Mbeki\",\"title\":\"President\"},\"2000\":{\"name\":\"Thabo Mbeki\",\"title\":\"President\"},\"2001\":{\"name\":\"Thabo Mbeki\",\"title\":\"President\"},\"2002\":{\"name\":\"Thabo Mbeki\",\"title\":\"President\"},\"2003\":{\"name\":\"Thabo Mbeki\",\"title\":\"President\"},\"2004\":{\"name\":\"Thabo Mbeki\",\"title\":\"President\"},\"2005\":{\"name\":\"Thabo Mbeki\",\"title\":\"President\"},\"2006\":{\"name\":\"Thabo Mbeki\",\"title\":\"President\"},\"2007\":{\"name\":\"Thabo Mbeki\",\"title\":\"President\"},\"2008\":{\"name\":\"Kgalema Motlanthe\",\"title\":\"President\"},\"2009\":{\"name\":\"Jacob Zuma\",\"title\":\"President\"},\"2010\":{\"name\":\"Jacob Zuma\",\"title\":\"President\"},\"2011\":{\"name\":\"Jacob Zuma\",\"title\":\"President\"},\"2012\":{\"name\":\"Jacob Zuma\",\"title\":\"President\"},\"2013\":{\"name\":\"Jacob Zuma\",\"title\":\"President\"},\"2014\":{\"name\":\"Jacob Zuma\",\"title\":\"President\"},\"2015\":{\"name\":\"Jacob Zuma\",\"title\":\"President\"},\"2016\":{\"name\":\"Jacob Zuma\",\"title\":\"President\"},\"2017\":{\"name\":\"Jacob Zuma\",\"title\":\"President\"},\"2018\":{\"name\":\"Cyril Ramaphosa\",\"title\":\"President\"},\"2019\":{\"name\":\"Cyril Ramaphosa\",\"title\":\"President\"},\"2020\":{\"name\":\"Cyril Ramaphosa\",\"title\":\"President\"},\"2021\":{\"name\":\"Cyril Ramaphosa\",\"title\":\"President\"},\"2022\":{\"name\":\"Cyril Ramaphosa\",\"title\":\"President\"},\"2023\":{\"name\":\"Cyril Ramaphosa\",\"title\":\"President\"},\"2024\":{\"name\":\"Cyril Ramaphosa\",\"title\":\"President\"},\"2025\":{\"name\":\"Cyril Ramaphosa\",\"title\":\"President\"}},\"Egypt\":{\"1950\":{\"name\":\"Farouk I\",\"title\":\"King\"},\"1951\":{\"name\":\"Farouk I\",\"title\":\"King\"},\"1952\":{\"name\":\"Muhammad Naguib\",\"title\":\"President\"},\"1953\":{\"name\":\"Muhammad Naguib\",\"title\":\"President\"},\"1954\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1955\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1956\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1957\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1958\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1959\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1960\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1961\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1962\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1963\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1964\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1965\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1966\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1967\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1968\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1969\":{\"name\":\"Gamal Abdel Nasser\",\"title\":\"President\"},\"1970\":{\"name\":\"Anwar Sadat\",\"title\":\"President\"},\"1971\":{\"name\":\"Anwar Sadat\",\"title\":\"President\"},\"1972\":{\"name\":\"Anwar Sadat\",\"title\":\"President\"},\"1973\":{\"name\":\"Anwar Sadat\",\"title\":\"President\"},\"1974\":{\"name\":\"Anwar Sadat\",\"title\":\"President\"},\"1975\":{\"name\":\"Anwar Sadat\",\"title\":\"President\"},\"1976\":{\"name\":\"Anwar Sadat\",\"title\":\"President\"},\"1977\":{\"name\":\"Anwar Sadat\",\"title\":\"President\"},\"1978\":{\"name\":\"Anwar Sadat\",\"title\":\"President\"},\"1979\":{\"name\":\"Anwar Sadat\",\"title\":\"President\"},\"1980\":{\"name\":\"Anwar Sadat\",\"title\":\"President\"},\"1981\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1982\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1983\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1984\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1985\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1986\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1987\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1988\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1989\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1990\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1991\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1992\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1993\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1994\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1995\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1996\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1997\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1998\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"1999\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2000\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2001\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2002\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2003\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2004\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2005\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2006\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2007\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2008\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2009\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2010\":{\"name\":\"Hosni Mubarak\",\"title\":\"President\"},\"2011\":{\"name\":\"Mohamed Hussein Tantawi\",\"title\":\"Chairman of the SCAF\"},\"2012\":{\"name\":\"Mohamed Morsi\",\"title\":\"President\"},\"2013\":{\"name\":\"Adly Mansour\",\"title\":\"Acting President\"},\"2014\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"},\"2015\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"},\"2016\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"},\"2017\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"},\"2018\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"},\"2019\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"},\"2020\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"},\"2021\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"},\"2022\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"},\"2023\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"},\"2024\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"},\"2025\":{\"name\":\"Abdel Fattah el-Sisi\",\"title\":\"President\"}},\"Saudi Arabia\":{\"1950\":{\"name\":\"Abdulaziz Ibn Saud\",\"title\":\"King\"},\"1951\":{\"name\":\"Abdulaziz Ibn Saud\",\"title\":\"King\"},\"1952\":{\"name\":\"Abdulaziz Ibn Saud\",\"title\":\"King\"},\"1953\":{\"name\":\"Saud\",\"title\":\"King\"},\"1954\":{\"name\":\"Saud\",\"title\":\"King\"},\"1955\":{\"name\":\"Saud\",\"title\":\"King\"},\"1956\":{\"name\":\"Saud\",\"title\":\"King\"},\"1957\":{\"name\":\"Saud\",\"title\":\"King\"},\"1958\":{\"name\":\"Saud\",\"title\":\"King\"},\"1959\":{\"name\":\"Saud\",\"title\":\"King\"},\"1960\":{\"name\":\"Saud\",\"title\":\"King\"},\"1961\":{\"name\":\"Saud\",\"title\":\"King\"},\"1962\":{\"name\":\"Saud\",\"title\":\"King\"},\"1963\":{\"name\":\"Saud\",\"title\":\"King\"},\"1964\":{\"name\":\"Faisal\",\"title\":\"King\"},\"1965\":{\"name\":\"Faisal\",\"title\":\"King\"},\"1966\":{\"name\":\"Faisal\",\"title\":\"King\"},\"1967\":{\"name\":\"Faisal\",\"title\":\"King\"},\"1968\":{\"name\":\"Faisal\",\"title\":\"King\"},\"1969\":{\"name\":\"Faisal\",\"title\":\"King\"},\"1970\":{\"name\":\"Faisal\",\"title\":\"King\"},\"1971\":{\"name\":\"Faisal\",\"title\":\"King\"},\"1972\":{\"name\":\"Faisal\",\"title\":\"King\"},\"1973\":{\"name\":\"Faisal\",\"title\":\"King\"},\"1974\":{\"name\":\"Faisal\",\"title\":\"King\"},\"1975\":{\"name\":\"Khalid\",\"title\":\"King\"},\"1976\":{\"name\":\"Khalid\",\"title\":\"King\"},\"1977\":{\"name\":\"Khalid\",\"title\":\"King\"},\"1978\":{\"name\":\"Khalid\",\"title\":\"King\"},\"1979\":{\"name\":\"Khalid\",\"title\":\"King\"},\"1980\":{\"name\":\"Khalid\",\"title\":\"King\"},\"1981\":{\"name\":\"Khalid\",\"title\":\"King\"},\"1982\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1983\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1984\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1985\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1986\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1987\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1988\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1989\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1990\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1991\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1992\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1993\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1994\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1995\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1996\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1997\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1998\":{\"name\":\"Fahd\",\"title\":\"King\"},\"1999\":{\"name\":\"Fahd\",\"title\":\"King\"},\"2000\":{\"name\":\"Fahd\",\"title\":\"King\"},\"2001\":{\"name\":\"Fahd\",\"title\":\"King\"},\"2002\":{\"name\":\"Fahd\",\"title\":\"King\"},\"2003\":{\"name\":\"Fahd\",\"title\":\"King\"},\"2004\":{\"name\":\"Fahd\",\"title\":\"King\"},\"2005\":{\"name\":\"Abdullah\",\"title\":\"King\"},\"2006\":{\"name\":\"Abdullah\",\"title\":\"King\"},\"2007\":{\"name\":\"Abdullah\",\"title\":\"King\"},\"2008\":{\"name\":\"Abdullah\",\"title\":\"King\"},\"2009\":{\"name\":\"Abdullah\",\"title\":\"King\"},\"2010\":{\"name\":\"Abdullah\",\"title\":\"King\"},\"2011\":{\"name\":\"Abdullah\",\"title\":\"King\"},\"2012\":{\"name\":\"Abdullah\",\"title\":\"King\"},\"2013\":{\"name\":\"Abdullah\",\"title\":\"King\"},\"2014\":{\"name\":\"Abdullah\",\"title\":\"King\"},\"2015\":{\"name\":\"Salman\",\"title\":\"King\"},\"2016\":{\"name\":\"Salman\",\"title\":\"King\"},\"2017\":{\"name\":\"Salman\",\"title\":\"King\"},\"2018\":{\"name\":\"Salman\",\"title\":\"King\"},\"2019\":{\"name\":\"Salman\",\"title\":\"King\"},\"2020\":{\"name\":\"Salman\",\"title\":\"King\"},\"2021\":{\"name\":\"Salman\",\"title\":\"King\"},\"2022\":{\"name\":\"Salman\",\"title\":\"King\"},\"2023\":{\"name\":\"Salman\",\"title\":\"King\"},\"2024\":{\"name\":\"Salman\",\"title\":\"King\"},\"2025\":{\"name\":\"Salman\",\"title\":\"King\"}},\"Philippines\":{\"1950\":{\"name\":\"Elpidio Quirino\",\"title\":\"President\"},\"1951\":{\"name\":\"Elpidio Quirino\",\"title\":\"President\"},\"1952\":{\"name\":\"Elpidio Quirino\",\"title\":\"President\"},\"1953\":{\"name\":\"Ramon Magsaysay\",\"title\":\"President\"},\"1954\":{\"name\":\"Ramon Magsaysay\",\"title\":\"President\"},\"1955\":{\"name\":\"Ramon Magsaysay\",\"title\":\"President\"},\"1956\":{\"name\":\"Ramon Magsaysay\",\"title\":\"President\"},\"1957\":{\"name\":\"Carlos P. Garcia\",\"title\":\"President\"},\"1958\":{\"name\":\"Carlos P. Garcia\",\"title\":\"President\"},\"1959\":{\"name\":\"Carlos P. Garcia\",\"title\":\"President\"},\"1960\":{\"name\":\"Carlos P. Garcia\",\"title\":\"President\"},\"1961\":{\"name\":\"Diosdado Macapagal\",\"title\":\"President\"},\"1962\":{\"name\":\"Diosdado Macapagal\",\"title\":\"President\"},\"1963\":{\"name\":\"Diosdado Macapagal\",\"title\":\"President\"},\"1964\":{\"name\":\"Diosdado Macapagal\",\"title\":\"President\"},\"1965\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1966\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1967\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1968\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1969\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1970\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1971\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1972\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1973\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1974\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1975\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1976\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1977\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1978\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1979\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1980\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1981\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1982\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1983\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1984\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1985\":{\"name\":\"Ferdinand Marcos\",\"title\":\"President\"},\"1986\":{\"name\":\"Corazon Aquino\",\"title\":\"President\"},\"1987\":{\"name\":\"Corazon Aquino\",\"title\":\"President\"},\"1988\":{\"name\":\"Corazon Aquino\",\"title\":\"President\"},\"1989\":{\"name\":\"Corazon Aquino\",\"title\":\"President\"},\"1990\":{\"name\":\"Corazon Aquino\",\"title\":\"President\"},\"1991\":{\"name\":\"Corazon Aquino\",\"title\":\"President\"},\"1992\":{\"name\":\"Fidel V. Ramos\",\"title\":\"President\"},\"1993\":{\"name\":\"Fidel V. Ramos\",\"title\":\"President\"},\"1994\":{\"name\":\"Fidel V. Ramos\",\"title\":\"President\"},\"1995\":{\"name\":\"Fidel V. Ramos\",\"title\":\"President\"},\"1996\":{\"name\":\"Fidel V. Ramos\",\"title\":\"President\"},\"1997\":{\"name\":\"Fidel V. Ramos\",\"title\":\"President\"},\"1998\":{\"name\":\"Joseph Estrada\",\"title\":\"President\"},\"1999\":{\"name\":\"Joseph Estrada\",\"title\":\"President\"},\"2000\":{\"name\":\"Joseph Estrada\",\"title\":\"President\"},\"2001\":{\"name\":\"Gloria Macapagal Arroyo\",\"title\":\"President\"},\"2002\":{\"name\":\"Gloria Macapagal Arroyo\",\"title\":\"President\"},\"2003\":{\"name\":\"Gloria Macapagal Arroyo\",\"title\":\"President\"},\"2004\":{\"name\":\"Gloria Macapagal Arroyo\",\"title\":\"President\"},\"2005\":{\"name\":\"Gloria Macapagal Arroyo\",\"title\":\"President\"},\"2006\":{\"name\":\"Gloria Macapagal Arroyo\",\"title\":\"President\"},\"2007\":{\"name\":\"Gloria Macapagal Arroyo\",\"title\":\"President\"},\"2008\":{\"name\":\"Gloria Macapagal Arroyo\",\"title\":\"President\"},\"2009\":{\"name\":\"Gloria Macapagal Arroyo\",\"title\":\"President\"},\"2010\":{\"name\":\"Benigno Aquino III\",\"title\":\"President\"},\"2011\":{\"name\":\"Benigno Aquino III\",\"title\":\"President\"},\"2012\":{\"name\":\"Benigno Aquino III\",\"title\":\"President\"},\"2013\":{\"name\":\"Benigno Aquino III\",\"title\":\"President\"},\"2014\":{\"name\":\"Benigno Aquino III\",\"title\":\"President\"},\"2015\":{\"name\":\"Benigno Aquino III\",\"title\":\"President\"},\"2016\":{\"name\":\"Rodrigo Duterte\",\"title\":\"President\"},\"2017\":{\"name\":\"Rodrigo Duterte\",\"title\":\"President\"},\"2018\":{\"name\":\"Rodrigo Duterte\",\"title\":\"President\"},\"2019\":{\"name\":\"Rodrigo Duterte\",\"title\":\"President\"},\"2020\":{\"name\":\"Rodrigo Duterte\",\"title\":\"President\"},\"2021\":{\"name\":\"Rodrigo Duterte\",\"title\":\"President\"},\"2022\":{\"name\":\"Bongbong Marcos\",\"title\":\"President\"},\"2023\":{\"name\":\"Bongbong Marcos\",\"title\":\"President\"},\"2024\":{\"name\":\"Bongbong Marcos\",\"title\":\"President\"},\"2025\":{\"name\":\"Bongbong Marcos\",\"title\":\"President\"}}}")
+};
 var prices_default = {
 	meta: {
 		"source": "US BLS / Census / USPS historical snapshots (bundled estimates)",
@@ -8740,6 +9719,37 @@ function lookupCulture(year) {
 		...map[String(key)]
 	};
 }
+var FILMS = films_default;
+/** US domestic calendar-year box-office #1 (BOM 1977+; estimated earlier). */
+function lookupFilm(year) {
+	const { minYear, maxYear } = FILMS.coverage;
+	const clamped = Math.min(maxYear, Math.max(minYear, year));
+	const row = FILMS.byYear[String(clamped)];
+	if (!row) return {
+		year,
+		dataYear: null,
+		clamped: false,
+		title: null,
+		market: null,
+		metric: null,
+		estimated: false,
+		source: FILMS.source,
+		notes: FILMS.notes,
+		coverage: FILMS.coverage
+	};
+	return {
+		year,
+		dataYear: clamped,
+		clamped: clamped !== year,
+		title: row.title,
+		market: row.market,
+		metric: row.metric,
+		estimated: row.estimated,
+		source: FILMS.source,
+		notes: FILMS.notes,
+		coverage: FILMS.coverage
+	};
+}
 var ZODIAC = [
 	{
 		name: "Capricorn",
@@ -8859,6 +9869,11671 @@ function lifeNumbers(date, now = /* @__PURE__ */ new Date()) {
 		orbits: Number(ageExact.toFixed(2)),
 		heartbeats: Math.round(days * 24 * 60 * 70),
 		fullMoons: Math.round(days / 29.530588)
+	};
+}
+var BIRTHS_POP = births_population_default;
+/** UN WPP world births + mid-year population for the birth year (1950–2023). */
+function lookupBirths(year) {
+	const { minYear, maxYear } = BIRTHS_POP.coverage;
+	const clamped = Math.min(maxYear, Math.max(minYear, year));
+	const row = BIRTHS_POP.byYear[String(clamped)];
+	if (!row) return {
+		year,
+		dataYear: null,
+		clamped: false,
+		dailyBirths: null,
+		annualBirths: null,
+		worldPopulation: null,
+		source: BIRTHS_POP.source,
+		notes: BIRTHS_POP.notes,
+		coverage: BIRTHS_POP.coverage
+	};
+	return {
+		year,
+		dataYear: clamped,
+		clamped: clamped !== year,
+		dailyBirths: row.dailyBirths,
+		annualBirths: row.births,
+		worldPopulation: row.population,
+		source: BIRTHS_POP.source,
+		notes: BIRTHS_POP.notes,
+		coverage: BIRTHS_POP.coverage
+	};
+}
+var LEADERS = leaders_default;
+function resolveLeaderCountry(country) {
+	if (!country?.trim()) return null;
+	const raw = country.trim();
+	if (LEADERS.byCountry[raw]) return raw;
+	const alias = LEADERS.aliases[raw.toLowerCase()];
+	if (alias && LEADERS.byCountry[alias]) return alias;
+	const lower = raw.toLowerCase();
+	for (const key of Object.keys(LEADERS.byCountry)) if (key.toLowerCase() === lower) return key;
+	return null;
+}
+/** Mid-year national leader for the birth country (keepsake; soft language). */
+function lookupLeaders(year, country) {
+	const { minYear, maxYear } = LEADERS.coverage;
+	const clamped = Math.min(maxYear, Math.max(minYear, year));
+	const resolved = resolveLeaderCountry(country);
+	const row = resolved ? LEADERS.byCountry[resolved]?.[String(clamped)] : void 0;
+	return {
+		year,
+		dataYear: row ? clamped : null,
+		clamped: row ? clamped !== year : false,
+		countryInput: country?.trim() || null,
+		country: resolved,
+		name: row?.name ?? null,
+		title: row?.title ?? null,
+		supported: Boolean(resolved),
+		source: LEADERS.source,
+		notes: LEADERS.notes,
+		coverage: LEADERS.coverage
+	};
+}
+// worker/lib/starmap.ts
+var STAR_CATALOG = {
+	source: "Yale Bright Star Catalogue via d3-celestial stars.6 (mag ≤ 5.2) + IAU constellation figures",
+	magLimit: 5.2,
+	stars: [
+		[
+			6.75248,
+			-16.7161,
+			-1.44
+		],
+		[
+			6.3992,
+			-52.6957,
+			-.62
+		],
+		[
+			14.26102,
+			19.1824,
+			-.05
+		],
+		[
+			14.66014,
+			-60.834,
+			-.01
+		],
+		[
+			18.61565,
+			38.7837,
+			.03
+		],
+		[
+			5.27815,
+			45.998,
+			.08
+		],
+		[
+			5.2423,
+			-8.2016,
+			.18
+		],
+		[
+			7.65503,
+			5.225,
+			.4
+		],
+		[
+			1.62857,
+			-57.2368,
+			.45
+		],
+		[
+			5.91953,
+			7.4071,
+			.45
+		],
+		[
+			14.06373,
+			-60.373,
+			.61
+		],
+		[
+			19.84639,
+			8.8683,
+			.76
+		],
+		[
+			12.44331,
+			-63.0991,
+			.77
+		],
+		[
+			4.59868,
+			16.5093,
+			.87
+		],
+		[
+			13.41988,
+			-11.1613,
+			.98
+		],
+		[
+			16.49013,
+			-26.432,
+			1.06
+		],
+		[
+			7.75527,
+			28.0262,
+			1.16
+		],
+		[
+			22.96085,
+			-29.6222,
+			1.17
+		],
+		[
+			12.79535,
+			-59.6888,
+			1.25
+		],
+		[
+			20.69053,
+			45.2803,
+			1.25
+		],
+		[
+			14.65975,
+			-60.8372,
+			1.35
+		],
+		[
+			10.13953,
+			11.9672,
+			1.36
+		],
+		[
+			6.9771,
+			-28.9721,
+			1.5
+		],
+		[
+			7.57663,
+			31.8883,
+			1.58
+		],
+		[
+			12.51943,
+			-57.1132,
+			1.59
+		],
+		[
+			17.56015,
+			-37.1038,
+			1.62
+		],
+		[
+			5.41885,
+			6.3497,
+			1.64
+		],
+		[
+			5.4382,
+			28.6075,
+			1.65
+		],
+		[
+			9.21999,
+			-69.7172,
+			1.67
+		],
+		[
+			5.60356,
+			-1.2019,
+			1.69
+		],
+		[
+			22.13722,
+			-46.961,
+			1.73
+		],
+		[
+			5.67931,
+			-1.9426,
+			1.74
+		],
+		[
+			8.15887,
+			-47.3366,
+			1.75
+		],
+		[
+			12.90049,
+			55.9598,
+			1.76
+		],
+		[
+			3.40538,
+			49.8612,
+			1.79
+		],
+		[
+			18.40287,
+			-34.3846,
+			1.79
+		],
+		[
+			11.06213,
+			61.751,
+			1.81
+		],
+		[
+			7.13986,
+			-26.3932,
+			1.83
+		],
+		[
+			13.79235,
+			49.3133,
+			1.85
+		],
+		[
+			8.37523,
+			-59.5095,
+			1.86
+		],
+		[
+			17.62198,
+			-42.9978,
+			1.86
+		],
+		[
+			5.99215,
+			44.9474,
+			1.9
+		],
+		[
+			16.81108,
+			-69.0277,
+			1.91
+		],
+		[
+			6.62853,
+			16.3993,
+			1.93
+		],
+		[
+			8.74506,
+			-54.7088,
+			1.93
+		],
+		[
+			20.42746,
+			-56.7351,
+			1.94
+		],
+		[
+			2.5303,
+			89.2641,
+			1.97
+		],
+		[
+			6.37833,
+			-17.9559,
+			1.98
+		],
+		[
+			9.45979,
+			-8.6586,
+			1.99
+		],
+		[
+			2.11956,
+			23.4624,
+			2.01
+		],
+		[
+			10.33287,
+			19.8415,
+			2.01
+		],
+		[
+			.72649,
+			-17.9866,
+			2.04
+		],
+		[
+			18.92109,
+			-26.2967,
+			2.05
+		],
+		[
+			14.11137,
+			-36.37,
+			2.06
+		],
+		[
+			.13979,
+			29.0904,
+			2.07
+		],
+		[
+			1.1622,
+			35.6206,
+			2.07
+		],
+		[
+			5.79594,
+			-9.6696,
+			2.07
+		],
+		[
+			14.84509,
+			74.1555,
+			2.07
+		],
+		[
+			22.71113,
+			-46.8846,
+			2.07
+		],
+		[
+			17.58224,
+			12.56,
+			2.08
+		],
+		[
+			3.13615,
+			40.9556,
+			2.09
+		],
+		[
+			2.06499,
+			42.3297,
+			2.1
+		],
+		[
+			11.81766,
+			14.5721,
+			2.14
+		],
+		[
+			.94515,
+			60.7167,
+			2.15
+		],
+		[
+			12.69195,
+			-48.9599,
+			2.2
+		],
+		[
+			8.05973,
+			-40.0031,
+			2.21
+		],
+		[
+			9.28483,
+			-59.2752,
+			2.21
+		],
+		[
+			15.57813,
+			26.7147,
+			2.22
+		],
+		[
+			9.13327,
+			-43.4326,
+			2.23
+		],
+		[
+			13.39876,
+			54.9254,
+			2.23
+		],
+		[
+			20.37047,
+			40.2567,
+			2.23
+		],
+		[
+			.67512,
+			56.5373,
+			2.24
+		],
+		[
+			17.94343,
+			51.4889,
+			2.24
+		],
+		[
+			5.53345,
+			-.2991,
+			2.25
+		],
+		[
+			.15297,
+			59.1498,
+			2.28
+		],
+		[
+			13.66479,
+			-53.4664,
+			2.29
+		],
+		[
+			16.00556,
+			-22.6217,
+			2.29
+		],
+		[
+			16.83606,
+			-34.2932,
+			2.29
+		],
+		[
+			14.69882,
+			-47.3882,
+			2.3
+		],
+		[
+			14.59179,
+			-42.1578,
+			2.33
+		],
+		[
+			11.03069,
+			56.3824,
+			2.34
+		],
+		[
+			14.74978,
+			27.0742,
+			2.35
+		],
+		[
+			21.73643,
+			9.875,
+			2.38
+		],
+		[
+			17.70813,
+			-39.03,
+			2.39
+		],
+		[
+			.43807,
+			-42.306,
+			2.4
+		],
+		[
+			11.89718,
+			53.6948,
+			2.41
+		],
+		[
+			17.17297,
+			-15.7249,
+			2.43
+		],
+		[
+			23.06291,
+			28.0828,
+			2.44
+		],
+		[
+			7.40159,
+			-29.3031,
+			2.45
+		],
+		[
+			21.30966,
+			62.5856,
+			2.45
+		],
+		[
+			9.36856,
+			-55.0107,
+			2.47
+		],
+		[
+			20.77019,
+			33.9703,
+			2.48
+		],
+		[
+			23.07935,
+			15.2053,
+			2.49
+		],
+		[
+			3.03799,
+			4.0897,
+			2.54
+		],
+		[
+			16.61931,
+			-10.5671,
+			2.54
+		],
+		[
+			13.92566,
+			-47.2884,
+			2.55
+		],
+		[
+			11.23514,
+			20.5237,
+			2.56
+		],
+		[
+			16.09062,
+			-19.8055,
+			2.56
+		],
+		[
+			5.54551,
+			-17.8223,
+			2.58
+		],
+		[
+			12.13931,
+			-50.7224,
+			2.58
+		],
+		[
+			12.26343,
+			-17.5419,
+			2.58
+		],
+		[
+			19.04353,
+			-29.8801,
+			2.6
+		],
+		[
+			15.28345,
+			-9.3829,
+			2.61
+		],
+		[
+			15.7378,
+			6.4256,
+			2.63
+		],
+		[
+			1.91067,
+			20.808,
+			2.64
+		],
+		[
+			5.66081,
+			-34.0741,
+			2.65
+		],
+		[
+			5.99535,
+			37.2126,
+			2.65
+		],
+		[
+			12.57312,
+			-23.3968,
+			2.65
+		],
+		[
+			1.43027,
+			60.2353,
+			2.66
+		],
+		[
+			13.91141,
+			18.3977,
+			2.68
+		],
+		[
+			14.97553,
+			-43.134,
+			2.68
+		],
+		[
+			4.94989,
+			33.1661,
+			2.69
+		],
+		[
+			10.77949,
+			-49.4203,
+			2.69
+		],
+		[
+			12.61973,
+			-69.1356,
+			2.69
+		],
+		[
+			17.51273,
+			-37.2958,
+			2.7
+		],
+		[
+			7.28571,
+			-37.0975,
+			2.71
+		],
+		[
+			18.3499,
+			-29.8281,
+			2.72
+		],
+		[
+			19.77099,
+			10.6133,
+			2.72
+		],
+		[
+			16.23909,
+			-3.6943,
+			2.73
+		],
+		[
+			16.39986,
+			61.5142,
+			2.73
+		],
+		[
+			10.71595,
+			-64.3945,
+			2.74
+		],
+		[
+			12.69435,
+			-1.4494,
+			2.74
+		],
+		[
+			5.59055,
+			-5.9099,
+			2.75
+		],
+		[
+			13.34328,
+			-36.7123,
+			2.75
+		],
+		[
+			14.84797,
+			-16.0418,
+			2.75
+		],
+		[
+			17.72454,
+			4.5673,
+			2.76
+		],
+		[
+			5.13083,
+			-5.0864,
+			2.78
+		],
+		[
+			16.50367,
+			21.4896,
+			2.78
+		],
+		[
+			17.24413,
+			14.3903,
+			2.78
+		],
+		[
+			12.25242,
+			-58.7489,
+			2.79
+		],
+		[
+			17.50721,
+			52.3014,
+			2.79
+		],
+		[
+			15.58568,
+			-41.1668,
+			2.8
+		],
+		[
+			5.47075,
+			-20.7594,
+			2.81
+		],
+		[
+			16.6881,
+			31.6027,
+			2.81
+		],
+		[
+			.42919,
+			-77.2542,
+			2.82
+		],
+		[
+			16.59804,
+			-28.216,
+			2.82
+		],
+		[
+			18.46618,
+			-25.4217,
+			2.82
+		],
+		[
+			.2206,
+			15.1836,
+			2.83
+		],
+		[
+			8.12573,
+			-24.3043,
+			2.83
+		],
+		[
+			15.91905,
+			-63.4307,
+			2.83
+		],
+		[
+			3.9022,
+			31.8836,
+			2.84
+		],
+		[
+			17.42167,
+			-55.5299,
+			2.84
+		],
+		[
+			17.53069,
+			-49.8761,
+			2.84
+		],
+		[
+			3.79141,
+			24.1051,
+			2.85
+		],
+		[
+			13.03628,
+			10.9592,
+			2.85
+		],
+		[
+			21.78401,
+			-16.1273,
+			2.85
+		],
+		[
+			1.9795,
+			-61.5699,
+			2.86
+		],
+		[
+			19.74958,
+			45.1308,
+			2.86
+		],
+		[
+			6.38267,
+			22.5136,
+			2.87
+		],
+		[
+			15.31516,
+			-68.6795,
+			2.87
+		],
+		[
+			22.30836,
+			-60.2596,
+			2.87
+		],
+		[
+			2.97102,
+			-40.3047,
+			2.88
+		],
+		[
+			19.16273,
+			-21.0236,
+			2.88
+		],
+		[
+			7.45251,
+			8.2893,
+			2.89
+		],
+		[
+			12.93379,
+			38.3184,
+			2.89
+		],
+		[
+			15.98087,
+			-26.1141,
+			2.89
+		],
+		[
+			3.96423,
+			40.0102,
+			2.9
+		],
+		[
+			16.35315,
+			-25.5928,
+			2.9
+		],
+		[
+			21.52598,
+			-5.5712,
+			2.9
+		],
+		[
+			3.07994,
+			53.5064,
+			2.91
+		],
+		[
+			9.78503,
+			-65.072,
+			2.92
+		],
+		[
+			22.71671,
+			30.2212,
+			2.93
+		],
+		[
+			6.83227,
+			-50.6146,
+			2.94
+		],
+		[
+			12.49774,
+			-16.5154,
+			2.94
+		],
+		[
+			22.0964,
+			-.3199,
+			2.95
+		],
+		[
+			3.96716,
+			-13.5085,
+			2.97
+		],
+		[
+			5.62741,
+			21.1425,
+			2.97
+		],
+		[
+			9.76419,
+			23.7743,
+			2.97
+		],
+		[
+			18.0968,
+			-30.4241,
+			2.98
+		],
+		[
+			13.31536,
+			-23.1715,
+			2.99
+		],
+		[
+			17.79308,
+			-40.127,
+			2.99
+		],
+		[
+			19.09017,
+			13.8635,
+			2.99
+		],
+		[
+			2.15906,
+			34.9873,
+			3
+		],
+		[
+			11.16106,
+			44.4985,
+			3
+		],
+		[
+			15.34547,
+			71.834,
+			3
+		],
+		[
+			16.86451,
+			-38.0474,
+			3
+		],
+		[
+			21.89881,
+			-37.3649,
+			3
+		],
+		[
+			3.71542,
+			47.7876,
+			3.01
+		],
+		[
+			6.33855,
+			-30.0634,
+			3.02
+		],
+		[
+			7.05041,
+			-23.8333,
+			3.02
+		],
+		[
+			12.16875,
+			-22.6198,
+			3.02
+		],
+		[
+			5.03281,
+			43.8233,
+			3.03
+		],
+		[
+			12.77133,
+			-68.1081,
+			3.04
+		],
+		[
+			14.53463,
+			38.3083,
+			3.04
+		],
+		[
+			19.51202,
+			27.9597,
+			3.05
+		],
+		[
+			20.35019,
+			-14.7814,
+			3.05
+		],
+		[
+			6.7322,
+			25.1311,
+			3.06
+		],
+		[
+			10.37215,
+			41.4995,
+			3.06
+		],
+		[
+			19.20925,
+			67.6615,
+			3.07
+		],
+		[
+			18.29379,
+			-36.7617,
+			3.1
+		],
+		[
+			8.92323,
+			5.9456,
+			3.11
+		],
+		[
+			10.82708,
+			-16.1936,
+			3.11
+		],
+		[
+			11.59636,
+			-63.0198,
+			3.11
+		],
+		[
+			20.62612,
+			-47.2915,
+			3.11
+		],
+		[
+			5.84933,
+			-35.7683,
+			3.12
+		],
+		[
+			8.98679,
+			48.0418,
+			3.12
+		],
+		[
+			16.977,
+			-55.9901,
+			3.12
+		],
+		[
+			17.25053,
+			24.8392,
+			3.12
+		],
+		[
+			14.98603,
+			-42.1042,
+			3.13
+		],
+		[
+			9.35092,
+			34.3926,
+			3.14
+		],
+		[
+			9.52037,
+			-57.0344,
+			3.16
+		],
+		[
+			17.25079,
+			36.8092,
+			3.16
+		],
+		[
+			6.62935,
+			-43.1959,
+			3.17
+		],
+		[
+			9.54762,
+			51.6773,
+			3.17
+		],
+		[
+			17.14644,
+			65.7147,
+			3.17
+		],
+		[
+			18.76094,
+			-26.9908,
+			3.17
+		],
+		[
+			5.10858,
+			41.2345,
+			3.18
+		],
+		[
+			14.70845,
+			-64.9751,
+			3.18
+		],
+		[
+			4.83067,
+			6.9613,
+			3.19
+		],
+		[
+			5.09102,
+			-22.371,
+			3.19
+		],
+		[
+			16.96114,
+			9.375,
+			3.19
+		],
+		[
+			17.83097,
+			-37.0433,
+			3.19
+		],
+		[
+			21.21561,
+			30.2269,
+			3.21
+		],
+		[
+			23.65579,
+			77.6323,
+			3.21
+		],
+		[
+			15.3562,
+			-40.6475,
+			3.22
+		],
+		[
+			16.30536,
+			-4.6925,
+			3.23
+		],
+		[
+			18.35517,
+			-2.8988,
+			3.23
+		],
+		[
+			21.47767,
+			70.5607,
+			3.23
+		],
+		[
+			6.80318,
+			-61.9414,
+			3.24
+		],
+		[
+			20.18841,
+			-.8215,
+			3.24
+		],
+		[
+			7.48717,
+			-43.3014,
+			3.25
+		],
+		[
+			14.10619,
+			-26.6824,
+			3.25
+		],
+		[
+			15.06784,
+			-25.282,
+			3.25
+		],
+		[
+			18.98239,
+			32.6896,
+			3.25
+		],
+		[
+			3.78732,
+			-74.239,
+			3.26
+		],
+		[
+			.65547,
+			30.861,
+			3.27
+		],
+		[
+			17.36683,
+			-24.9995,
+			3.27
+		],
+		[
+			22.91084,
+			-15.8208,
+			3.27
+		],
+		[
+			5.21553,
+			-16.2055,
+			3.29
+		],
+		[
+			10.22895,
+			-70.0379,
+			3.29
+		],
+		[
+			15.41549,
+			58.9661,
+			3.29
+		],
+		[
+			4.56661,
+			-55.045,
+			3.3
+		],
+		[
+			10.53374,
+			-61.6853,
+			3.3
+		],
+		[
+			6.24796,
+			22.5068,
+			3.31
+		],
+		[
+			17.42324,
+			-56.3777,
+			3.31
+		],
+		[
+			1.1014,
+			-46.7184,
+			3.32
+		],
+		[
+			3.08627,
+			38.8403,
+			3.32
+		],
+		[
+			12.2571,
+			57.0326,
+			3.32
+		],
+		[
+			17.20255,
+			-43.2392,
+			3.32
+		],
+		[
+			17.98377,
+			-9.7736,
+			3.32
+		],
+		[
+			19.11567,
+			-27.6704,
+			3.32
+		],
+		[
+			4.24041,
+			-62.4739,
+			3.33
+		],
+		[
+			11.23733,
+			15.4296,
+			3.33
+		],
+		[
+			7.82157,
+			-24.8598,
+			3.34
+		],
+		[
+			1.90659,
+			63.6701,
+			3.35
+		],
+		[
+			5.40795,
+			-2.3971,
+			3.35
+		],
+		[
+			6.75483,
+			12.8956,
+			3.35
+		],
+		[
+			8.50441,
+			60.7182,
+			3.35
+		],
+		[
+			19.42497,
+			3.1148,
+			3.36
+		],
+		[
+			15.37802,
+			-44.6896,
+			3.37
+		],
+		[
+			8.77959,
+			6.4188,
+			3.38
+		],
+		[
+			13.57822,
+			-.5958,
+			3.38
+		],
+		[
+			5.58563,
+			9.9342,
+			3.39
+		],
+		[
+			10.28471,
+			-61.3323,
+			3.39
+		],
+		[
+			12.92673,
+			3.3975,
+			3.39
+		],
+		[
+			22.18091,
+			58.2013,
+			3.39
+		],
+		[
+			4.47771,
+			15.8709,
+			3.4
+		],
+		[
+			1.47276,
+			-43.3182,
+			3.41
+		],
+		[
+			4.01134,
+			12.4903,
+			3.41
+		],
+		[
+			13.82508,
+			-41.6877,
+			3.41
+		],
+		[
+			15.20475,
+			-52.0992,
+			3.41
+		],
+		[
+			20.75483,
+			61.8388,
+			3.41
+		],
+		[
+			22.69103,
+			10.8314,
+			3.41
+		],
+		[
+			1.88469,
+			29.5788,
+			3.42
+		],
+		[
+			16.00203,
+			-38.3967,
+			3.42
+		],
+		[
+			17.77431,
+			27.7207,
+			3.42
+		],
+		[
+			20.74931,
+			-66.2032,
+			3.42
+		],
+		[
+			9.1828,
+			-58.9669,
+			3.43
+		],
+		[
+			10.27817,
+			23.4173,
+			3.43
+		],
+		[
+			19.10415,
+			-4.8826,
+			3.43
+		],
+		[
+			10.28494,
+			42.9144,
+			3.45
+		],
+		[
+			.81841,
+			57.8152,
+			3.46
+		],
+		[
+			1.14317,
+			-10.1823,
+			3.46
+		],
+		[
+			7.94631,
+			-52.9824,
+			3.46
+		],
+		[
+			15.25838,
+			33.3148,
+			3.46
+		],
+		[
+			2.72168,
+			3.2358,
+			3.47
+		],
+		[
+			13.82694,
+			-42.4737,
+			3.47
+		],
+		[
+			10.12221,
+			16.7627,
+			3.48
+		],
+		[
+			16.71493,
+			38.9223,
+			3.48
+		],
+		[
+			1.73447,
+			-15.9375,
+			3.49
+		],
+		[
+			7.02865,
+			-27.9348,
+			3.49
+		],
+		[
+			11.30798,
+			33.0943,
+			3.49
+		],
+		[
+			15.03243,
+			40.3906,
+			3.49
+		],
+		[
+			18.44956,
+			-45.9685,
+			3.49
+		],
+		[
+			22.80925,
+			-51.3169,
+			3.49
+		],
+		[
+			6.83068,
+			-32.5085,
+			3.5
+		],
+		[
+			7.33538,
+			21.9823,
+			3.5
+		],
+		[
+			22.82801,
+			66.2004,
+			3.5
+		],
+		[
+			19.97929,
+			19.4921,
+			3.51
+		],
+		[
+			22.83339,
+			24.6016,
+			3.51
+		],
+		[
+			3.72081,
+			-9.7634,
+			3.52
+		],
+		[
+			9.68584,
+			9.8923,
+			3.52
+		],
+		[
+			9.94771,
+			-54.5678,
+			3.52
+		],
+		[
+			18.83467,
+			33.3627,
+			3.52
+		],
+		[
+			18.96217,
+			-21.1067,
+			3.52
+		],
+		[
+			22.16999,
+			6.1979,
+			3.52
+		],
+		[
+			4.47695,
+			19.1804,
+			3.53
+		],
+		[
+			8.27525,
+			9.1855,
+			3.53
+		],
+		[
+			11.55003,
+			-31.8576,
+			3.54
+		],
+		[
+			15.827,
+			-3.4302,
+			3.54
+		],
+		[
+			17.62645,
+			-15.3986,
+			3.54
+		],
+		[
+			4.29824,
+			-33.7983,
+			3.55
+		],
+		[
+			5.78259,
+			-14.822,
+			3.55
+		],
+		[
+			14.32339,
+			-46.0581,
+			3.55
+		],
+		[
+			18.35094,
+			72.7328,
+			3.55
+		],
+		[
+			20.14545,
+			-66.1821,
+			3.55
+		],
+		[
+			.3238,
+			-8.8239,
+			3.56
+		],
+		[
+			2.27516,
+			-51.5122,
+			3.56
+		],
+		[
+			11.32235,
+			-14.7785,
+			3.56
+		],
+		[
+			16.87226,
+			-38.0175,
+			3.56
+		],
+		[
+			7.74079,
+			24.398,
+			3.57
+		],
+		[
+			9.06043,
+			47.1565,
+			3.57
+		],
+		[
+			14.5305,
+			30.3714,
+			3.57
+		],
+		[
+			15.36343,
+			-36.2614,
+			3.57
+		],
+		[
+			7.30155,
+			16.5404,
+			3.58
+		],
+		[
+			20.30091,
+			-12.5449,
+			3.58
+		],
+		[
+			1.63321,
+			48.6282,
+			3.59
+		],
+		[
+			5.29344,
+			-6.8444,
+			3.59
+		],
+		[
+			5.74105,
+			-22.4484,
+			3.59
+		],
+		[
+			11.84492,
+			1.7647,
+			3.59
+		],
+		[
+			12.356,
+			-60.4011,
+			3.59
+		],
+		[
+			1.40039,
+			-8.1833,
+			3.6
+		],
+		[
+			6.87981,
+			33.9613,
+			3.6
+		],
+		[
+			8.67155,
+			-52.9219,
+			3.6
+		],
+		[
+			9.51167,
+			-40.4668,
+			3.6
+		],
+		[
+			15.61707,
+			-28.1351,
+			3.6
+		],
+		[
+			17.51831,
+			-60.6838,
+			3.6
+		],
+		[
+			2.83307,
+			27.2605,
+			3.61
+		],
+		[
+			3.41355,
+			9.0289,
+			3.61
+		],
+		[
+			10.17647,
+			-12.3541,
+			3.61
+		],
+		[
+			13.03785,
+			-71.5489,
+			3.61
+		],
+		[
+			17.76222,
+			-64.7239,
+			3.61
+		],
+		[
+			1.52473,
+			15.3458,
+			3.62
+		],
+		[
+			3.81937,
+			24.0534,
+			3.62
+		],
+		[
+			7.75425,
+			-37.9686,
+			3.62
+		],
+		[
+			16.90973,
+			-42.3613,
+			3.62
+		],
+		[
+			23.03202,
+			42.326,
+			3.62
+		],
+		[
+			11.76011,
+			-66.7288,
+			3.63
+		],
+		[
+			20.62582,
+			14.5951,
+			3.64
+		],
+		[
+			4.32989,
+			15.6276,
+			3.65
+		],
+		[
+			9.52547,
+			63.0619,
+			3.65
+		],
+		[
+			15.76979,
+			15.4218,
+			3.65
+		],
+		[
+			18.11052,
+			-50.0915,
+			3.65
+		],
+		[
+			22.48053,
+			-.02,
+			3.65
+		],
+		[
+			15.46381,
+			29.1057,
+			3.66
+		],
+		[
+			15.64427,
+			-29.7778,
+			3.66
+		],
+		[
+			14.07315,
+			64.3759,
+			3.67
+		],
+		[
+			20.9135,
+			-58.4542,
+			3.67
+		],
+		[
+			4.85343,
+			5.6051,
+			3.68
+		],
+		[
+			8.72654,
+			-33.1864,
+			3.68
+		],
+		[
+			19.78979,
+			18.5343,
+			3.68
+		],
+		[
+			23.15745,
+			-21.1724,
+			3.68
+		],
+		[
+			.61619,
+			53.8969,
+			3.69
+		],
+		[
+			1.93263,
+			-51.6089,
+			3.69
+		],
+		[
+			5.0413,
+			41.0758,
+			3.69
+		],
+		[
+			9.75411,
+			-62.5079,
+			3.69
+		],
+		[
+			11.76751,
+			47.7794,
+			3.69
+		],
+		[
+			21.66818,
+			-16.6623,
+			3.69
+		],
+		[
+			3.32528,
+			-21.7579,
+			3.7
+		],
+		[
+			17.96275,
+			29.2479,
+			3.7
+		],
+		[
+			23.28609,
+			3.2823,
+			3.7
+		],
+		[
+			4.90419,
+			2.4407,
+			3.71
+		],
+		[
+			5.94008,
+			-14.1677,
+			3.71
+		],
+		[
+			7.87029,
+			-40.5758,
+			3.71
+		],
+		[
+			15.84693,
+			4.4777,
+			3.71
+		],
+		[
+			18.12249,
+			9.5638,
+			3.71
+		],
+		[
+			19.92189,
+			6.4068,
+			3.71
+		],
+		[
+			3.54885,
+			-9.4583,
+			3.72
+		],
+		[
+			3.74793,
+			24.1133,
+			3.72
+		],
+		[
+			5.99212,
+			54.2847,
+			3.72
+		],
+		[
+			21.08219,
+			43.9279,
+			3.72
+		],
+		[
+			3.45282,
+			9.7327,
+			3.73
+		],
+		[
+			14.77081,
+			1.8929,
+			3.73
+		],
+		[
+			17.89215,
+			56.8726,
+			3.73
+		],
+		[
+			21.69129,
+			-77.39,
+			3.73
+		],
+		[
+			22.87691,
+			-7.5796,
+			3.73
+		],
+		[
+			1.85767,
+			-10.335,
+			3.74
+		],
+		[
+			16.36534,
+			19.1531,
+			3.74
+		],
+		[
+			21.24653,
+			38.0453,
+			3.74
+		],
+		[
+			9.06925,
+			-47.0977,
+			3.75
+		],
+		[
+			17.79821,
+			2.7073,
+			3.75
+		],
+		[
+			5.56042,
+			-62.4898,
+			3.76
+		],
+		[
+			5.85536,
+			-20.8791,
+			3.76
+		],
+		[
+			6.4803,
+			-7.0331,
+			3.76
+		],
+		[
+			19.07805,
+			-21.7415,
+			3.76
+		],
+		[
+			19.4951,
+			51.7298,
+			3.76
+		],
+		[
+			22.52153,
+			50.2825,
+			3.76
+		],
+		[
+			2.84495,
+			55.8955,
+			3.77
+		],
+		[
+			3.75323,
+			42.5785,
+			3.77
+		],
+		[
+			4.38225,
+			17.5425,
+			3.77
+		],
+		[
+			5.64577,
+			-2.6001,
+			3.77
+		],
+		[
+			8.42894,
+			-66.1369,
+			3.77
+		],
+		[
+			8.6771,
+			-46.6487,
+			3.77
+		],
+		[
+			16.82977,
+			-59.0414,
+			3.77
+		],
+		[
+			20.66063,
+			15.9121,
+			3.77
+		],
+		[
+			21.44445,
+			-22.4113,
+			3.77
+		],
+		[
+			22.11685,
+			25.3451,
+			3.77
+		],
+		[
+			7.14579,
+			-70.4989,
+			3.78
+		],
+		[
+			7.42878,
+			27.7981,
+			3.78
+		],
+		[
+			9.84982,
+			59.0387,
+			3.78
+		],
+		[
+			10.89157,
+			-58.8532,
+			3.78
+		],
+		[
+			14.68582,
+			13.7283,
+			3.78
+		],
+		[
+			20.7946,
+			-9.4958,
+			3.78
+		],
+		[
+			3.15827,
+			44.8575,
+			3.79
+		],
+		[
+			10.88853,
+			34.2149,
+			3.79
+		],
+		[
+			11.30312,
+			31.5308,
+			3.79
+		],
+		[
+			3.20126,
+			-28.9876,
+			3.8
+		],
+		[
+			7.64719,
+			-26.8038,
+			3.8
+		],
+		[
+			15.58004,
+			10.5389,
+			3.8
+		],
+		[
+			19.28505,
+			53.3685,
+			3.8
+		],
+		[
+			20.22719,
+			46.7413,
+			3.8
+		],
+		[
+			4.59251,
+			-30.5623,
+			3.81
+		],
+		[
+			10.46465,
+			-58.7394,
+			3.81
+		],
+		[
+			15.71238,
+			26.2956,
+			3.81
+		],
+		[
+			23.62607,
+			46.4582,
+			3.81
+		],
+		[
+			2.03412,
+			2.7638,
+			3.82
+		],
+		[
+			9.31407,
+			36.8026,
+			3.82
+		],
+		[
+			11.52339,
+			69.3311,
+			3.82
+		],
+		[
+			16.51523,
+			1.9839,
+			3.82
+		],
+		[
+			17.65775,
+			46.0063,
+			3.82
+		],
+		[
+			10.43484,
+			-16.8363,
+			3.83
+		],
+		[
+			13.97119,
+			-42.1008,
+			3.83
+		],
+		[
+			14.7977,
+			-79.0448,
+			3.83
+		],
+		[
+			3.73666,
+			-64.8069,
+			3.84
+		],
+		[
+			3.73865,
+			32.2882,
+			3.84
+		],
+		[
+			4.47625,
+			15.9622,
+			3.84
+		],
+		[
+			8.91745,
+			-60.6446,
+			3.84
+		],
+		[
+			10.54685,
+			9.3066,
+			3.84
+		],
+		[
+			10.62171,
+			-48.2256,
+			3.84
+		],
+		[
+			12.54111,
+			-72.133,
+			3.84
+		],
+		[
+			18.12571,
+			28.7625,
+			3.84
+		],
+		[
+			18.22939,
+			-21.0588,
+			3.84
+		],
+		[
+			19.80287,
+			70.2679,
+			3.84
+		],
+		[
+			4.23337,
+			-42.2944,
+			3.85
+		],
+		[
+			5.78808,
+			-51.0665,
+			3.85
+		],
+		[
+			6.36857,
+			-33.4364,
+			3.85
+		],
+		[
+			10.2456,
+			-42.1219,
+			3.85
+		],
+		[
+			12.55804,
+			69.7882,
+			3.85
+		],
+		[
+			12.62838,
+			-48.5413,
+			3.85
+		],
+		[
+			15.94089,
+			15.6616,
+			3.85
+		],
+		[
+			18.39497,
+			21.7698,
+			3.85
+		],
+		[
+			18.58679,
+			-8.2441,
+			3.85
+		],
+		[
+			.94589,
+			38.4993,
+			3.86
+		],
+		[
+			4.63634,
+			-14.304,
+			3.86
+		],
+		[
+			5.52021,
+			-35.4705,
+			3.86
+		],
+		[
+			16.2573,
+			-63.6857,
+			3.86
+		],
+		[
+			16.55752,
+			-78.8971,
+			3.86
+		],
+		[
+			17.93755,
+			37.2505,
+			3.86
+		],
+		[
+			22.36094,
+			-1.3873,
+			3.86
+		],
+		[
+			3.76378,
+			24.3677,
+			3.87
+		],
+		[
+			8.76713,
+			-46.0415,
+			3.87
+		],
+		[
+			13.97799,
+			-44.8036,
+			3.87
+		],
+		[
+			14.71767,
+			-5.6582,
+			3.87
+		],
+		[
+			15.94808,
+			-29.2141,
+			3.87
+		],
+		[
+			19.87455,
+			1.0057,
+			3.87
+		],
+		[
+			.15685,
+			-45.7474,
+			3.88
+		],
+		[
+			1.89217,
+			19.2939,
+			3.88
+		],
+		[
+			9.87939,
+			26.007,
+			3.88
+		],
+		[
+			15.19891,
+			-48.7378,
+			3.88
+		],
+		[
+			23.17265,
+			-45.2467,
+			3.88
+		],
+		[
+			2.94046,
+			-8.8981,
+			3.89
+		],
+		[
+			6.90221,
+			-24.1842,
+			3.89
+		],
+		[
+			9.23941,
+			2.3143,
+			3.89
+		],
+		[
+			12.33177,
+			-.6668,
+			3.89
+		],
+		[
+			19.93843,
+			35.0834,
+			3.89
+		],
+		[
+			9.66427,
+			-1.1428,
+			3.9
+		],
+		[
+			11.35011,
+			-54.491,
+			3.9
+		],
+		[
+			13.51741,
+			-39.4073,
+			3.9
+		],
+		[
+			4.05261,
+			5.9893,
+			3.91
+		],
+		[
+			8.42767,
+			-3.9064,
+			3.91
+		],
+		[
+			12.46733,
+			-50.2306,
+			3.91
+		],
+		[
+			15.0853,
+			-47.0512,
+			3.91
+		],
+		[
+			15.59211,
+			-14.7895,
+			3.91
+		],
+		[
+			16.32901,
+			46.3134,
+			3.91
+		],
+		[
+			17.00483,
+			30.9264,
+			3.92
+		],
+		[
+			19.36121,
+			-17.8472,
+			3.92
+		],
+		[
+			21.26373,
+			5.2478,
+			3.92
+		],
+		[
+			.43672,
+			-43.6798,
+			3.93
+		],
+		[
+			1.52086,
+			-49.0727,
+			3.93
+		],
+		[
+			2.90429,
+			52.7625,
+			3.93
+		],
+		[
+			4.60532,
+			-3.3525,
+			3.93
+		],
+		[
+			7.69702,
+			-72.6061,
+			3.93
+		],
+		[
+			11.14317,
+			-58.975,
+			3.93
+		],
+		[
+			16.11345,
+			-20.6692,
+			3.93
+		],
+		[
+			18.01075,
+			2.9316,
+			3.93
+		],
+		[
+			1.13975,
+			-55.2458,
+			3.94
+		],
+		[
+			7.68745,
+			-9.5511,
+			3.94
+		],
+		[
+			7.73013,
+			-28.9548,
+			3.94
+		],
+		[
+			8.74475,
+			18.1543,
+			3.94
+		],
+		[
+			20.95289,
+			41.1671,
+			3.94
+		],
+		[
+			2.05725,
+			72.4213,
+			3.95
+		],
+		[
+			6.6114,
+			-19.2559,
+			3.95
+		],
+		[
+			4.14436,
+			47.7125,
+			3.96
+		],
+		[
+			5.98578,
+			-42.8151,
+			3.96
+		],
+		[
+			9.01066,
+			41.7829,
+			3.96
+		],
+		[
+			9.18798,
+			-62.317,
+			3.96
+		],
+		[
+			19.37731,
+			-44.459,
+			3.96
+		],
+		[
+			19.39811,
+			-40.6159,
+			3.96
+		],
+		[
+			20.25787,
+			47.7142,
+			3.96
+		],
+		[
+			23.38284,
+			-20.1006,
+			3.96
+		],
+		[
+			4.40061,
+			-34.0168,
+			3.97
+		],
+		[
+			5.85817,
+			39.1485,
+			3.97
+		],
+		[
+			7.28051,
+			-67.9572,
+			3.97
+		],
+		[
+			8.66837,
+			-35.3084,
+			3.97
+		],
+		[
+			12.1942,
+			-52.3685,
+			3.97
+		],
+		[
+			15.84931,
+			-33.6272,
+			3.97
+		],
+		[
+			20.00987,
+			-72.9105,
+			3.97
+		],
+		[
+			22.48783,
+			-43.4956,
+			3.97
+		],
+		[
+			22.77552,
+			23.5657,
+			3.97
+		],
+		[
+			3.98275,
+			35.791,
+			3.98
+		],
+		[
+			21.56635,
+			45.5918,
+			3.98
+		],
+		[
+			2.00009,
+			-21.0778,
+			3.99
+		],
+		[
+			6.24759,
+			-6.2748,
+			3.99
+		],
+		[
+			10.40659,
+			-74.0316,
+			3.99
+		],
+		[
+			13.42043,
+			54.988,
+			3.99
+		],
+		[
+			23.29049,
+			-58.2357,
+			3.99
+		],
+		[
+			9.04077,
+			-66.3961,
+			4
+		],
+		[
+			11.39874,
+			10.5295,
+			4
+		],
+		[
+			16.19993,
+			-19.4607,
+			4
+		],
+		[
+			1.72768,
+			50.6887,
+			4.01
+		],
+		[
+			4.75837,
+			-3.2547,
+			4.01
+		],
+		[
+			7.06848,
+			20.5703,
+			4.01
+		],
+		[
+			7.24685,
+			-26.7727,
+			4.01
+		],
+		[
+			14.69933,
+			-37.7935,
+			4.01
+		],
+		[
+			16.03149,
+			58.5653,
+			4.01
+		],
+		[
+			16.33067,
+			-50.1555,
+			4.01
+		],
+		[
+			18.71726,
+			-71.4281,
+			4.01
+		],
+		[
+			20.48993,
+			30.3686,
+			4.01
+		],
+		[
+			8.8422,
+			-27.7098,
+			4.02
+		],
+		[
+			12.14023,
+			-24.7289,
+			4.02
+		],
+		[
+			18.99371,
+			15.0683,
+			4.02
+		],
+		[
+			19.02801,
+			-5.7391,
+			4.02
+		],
+		[
+			2.28857,
+			33.8472,
+			4.03
+		],
+		[
+			5.05697,
+			60.4422,
+			4.03
+		],
+		[
+			8.77829,
+			28.7599,
+			4.03
+		],
+		[
+			12.90989,
+			-57.1779,
+			4.03
+		],
+		[
+			18.09091,
+			2.5001,
+			4.03
+		],
+		[
+			20.55355,
+			11.3033,
+			4.03
+		],
+		[
+			23.98853,
+			6.8633,
+			4.03
+		],
+		[
+			4.19776,
+			-6.8376,
+			4.04
+		],
+		[
+			11.76432,
+			6.5294,
+			4.04
+		],
+		[
+			14.41995,
+			51.8507,
+			4.04
+		],
+		[
+			22.58927,
+			-.1175,
+			4.04
+		],
+		[
+			3.15111,
+			49.6133,
+			4.05
+		],
+		[
+			8.30877,
+			-76.9197,
+			4.05
+		],
+		[
+			8.73999,
+			-42.6493,
+			4.05
+		],
+		[
+			11.35227,
+			6.0293,
+			4.05
+		],
+		[
+			13.82462,
+			15.7979,
+			4.05
+		],
+		[
+			14.34262,
+			-37.8853,
+			4.05
+		],
+		[
+			14.63145,
+			-49.4258,
+			4.05
+		],
+		[
+			22.82653,
+			-13.5926,
+			4.05
+		],
+		[
+			4.93952,
+			13.5145,
+			4.06
+		],
+		[
+			7.59871,
+			26.8957,
+			4.06
+		],
+		[
+			11.4147,
+			-17.684,
+			4.06
+		],
+		[
+			12.29285,
+			-67.9607,
+			4.06
+		],
+		[
+			12.30729,
+			-64.0031,
+			4.06
+		],
+		[
+			14.72762,
+			-35.1737,
+			4.06
+		],
+		[
+			16.99307,
+			-53.1604,
+			4.06
+		],
+		[
+			14.26691,
+			-6.0005,
+			4.07
+		],
+		[
+			15.14739,
+			-45.2799,
+			4.07
+		],
+		[
+			15.2919,
+			-58.8012,
+			4.07
+		],
+		[
+			22.48619,
+			58.4152,
+			4.07
+		],
+		[
+			.78898,
+			24.2672,
+			4.08
+		],
+		[
+			2.36249,
+			-68.6594,
+			4.08
+		],
+		[
+			2.65805,
+			.3285,
+			4.08
+		],
+		[
+			3.03986,
+			-23.6245,
+			4.08
+		],
+		[
+			6.90317,
+			-12.0386,
+			4.08
+		],
+		[
+			9.57407,
+			-59.2298,
+			4.08
+		],
+		[
+			10.99624,
+			-18.2988,
+			4.08
+		],
+		[
+			18.92225,
+			43.9461,
+			4.08
+		],
+		[
+			21.09912,
+			-17.2329,
+			4.08
+		],
+		[
+			21.36811,
+			19.8045,
+			4.08
+		],
+		[
+			5.61511,
+			9.2907,
+			4.09
+		],
+		[
+			15.81233,
+			18.1416,
+			4.09
+		],
+		[
+			1.61329,
+			41.4055,
+			4.1
+		],
+		[
+			2.73666,
+			49.2284,
+			4.1
+		],
+		[
+			7.82064,
+			-46.3732,
+			4.1
+		],
+		[
+			18.48051,
+			-49.0706,
+			4.1
+		],
+		[
+			19.16715,
+			-39.3408,
+			4.1
+		],
+		[
+			2.67779,
+			-39.8554,
+			4.11
+		],
+		[
+			7.06264,
+			-15.6333,
+			4.11
+		],
+		[
+			8.6274,
+			-42.9891,
+			4.11
+		],
+		[
+			9.85797,
+			-14.8466,
+			4.11
+		],
+		[
+			10.59114,
+			-78.6078,
+			4.11
+		],
+		[
+			11.77523,
+			-61.1784,
+			4.11
+		],
+		[
+			15.61201,
+			-66.317,
+			4.11
+		],
+		[
+			19.15787,
+			-37.9045,
+			4.11
+		],
+		[
+			23.01467,
+			-52.7541,
+			4.11
+		],
+		[
+			2.65982,
+			-68.2669,
+			4.12
+		],
+		[
+			4.24829,
+			48.4093,
+			4.12
+		],
+		[
+			6.03972,
+			9.6473,
+			4.12
+		],
+		[
+			12.08681,
+			8.733,
+			4.12
+		],
+		[
+			19.92103,
+			-41.8683,
+			4.12
+		],
+		[
+			20.86369,
+			-26.9191,
+			4.12
+		],
+		[
+			22.49595,
+			-43.7492,
+			4.12
+		],
+		[
+			5.39912,
+			-7.8081,
+			4.13
+		],
+		[
+			6.48272,
+			20.2121,
+			4.13
+		],
+		[
+			15.89709,
+			-16.7293,
+			4.13
+		],
+		[
+			20.76826,
+			-25.2709,
+			4.13
+		],
+		[
+			22.76764,
+			-81.3816,
+			4.13
+		],
+		[
+			23.66585,
+			5.6263,
+			4.13
+		],
+		[
+			3.51455,
+			12.9367,
+			4.14
+		],
+		[
+			3.77211,
+			23.9484,
+			4.14
+		],
+		[
+			8.6276,
+			5.7038,
+			4.14
+		],
+		[
+			12.11469,
+			-64.6137,
+			4.14
+		],
+		[
+			15.54883,
+			31.3591,
+			4.14
+		],
+		[
+			15.95979,
+			26.8779,
+			4.14
+		],
+		[
+			21.74409,
+			25.645,
+			4.14
+		],
+		[
+			22.26616,
+			37.7487,
+			4.14
+		],
+		[
+			7.19774,
+			-.4928,
+			4.15
+		],
+		[
+			17.39471,
+			37.1459,
+			4.15
+		],
+		[
+			23.67347,
+			44.3339,
+			4.15
+		],
+		[
+			6.06867,
+			23.2633,
+			4.16
+		],
+		[
+			7.4852,
+			31.7846,
+			4.16
+		],
+		[
+			16.07267,
+			-11.3736,
+			4.16
+		],
+		[
+			17.43951,
+			-24.1753,
+			4.16
+		],
+		[
+			.55,
+			62.9318,
+			4.17
+		],
+		[
+			3.82423,
+			-36.2003,
+			4.17
+		],
+		[
+			22.28057,
+			-7.7833,
+			4.17
+		],
+		[
+			14.21493,
+			-10.2737,
+			4.18
+		],
+		[
+			14.27306,
+			46.0883,
+			4.18
+		],
+		[
+			16.60624,
+			-35.2553,
+			4.18
+		],
+		[
+			22.25061,
+			57.0436,
+			4.18
+		],
+		[
+			22.67759,
+			-27.0436,
+			4.18
+		],
+		[
+			13.82409,
+			-34.4508,
+			4.19
+		],
+		[
+			18.76103,
+			20.5463,
+			4.19
+		],
+		[
+			5.51307,
+			5.9481,
+			4.2
+		],
+		[
+			7.94765,
+			-22.8801,
+			4.2
+		],
+		[
+			10.46472,
+			36.7072,
+			4.2
+		],
+		[
+			16.56839,
+			42.437,
+			4.2
+		],
+		[
+			22.77822,
+			12.1729,
+			4.2
+		],
+		[
+			22.93247,
+			-32.5396,
+			4.2
+		],
+		[
+			3.48448,
+			59.9403,
+			4.21
+		],
+		[
+			4.42283,
+			22.2939,
+			4.21
+		],
+		[
+			16.76618,
+			82.0373,
+			4.21
+		],
+		[
+			20.49303,
+			62.9941,
+			4.21
+		],
+		[
+			21.44073,
+			-65.3662,
+			4.21
+		],
+		[
+			2.84307,
+			38.3186,
+			4.22
+		],
+		[
+			3.7808,
+			-23.2497,
+			4.22
+		],
+		[
+			7.88838,
+			-48.1029,
+			4.22
+		],
+		[
+			16.10987,
+			-36.8023,
+			4.22
+		],
+		[
+			16.4504,
+			-18.4563,
+			4.22
+		],
+		[
+			18.34595,
+			71.3378,
+			4.22
+		],
+		[
+			18.78624,
+			-4.7479,
+			4.22
+		],
+		[
+			18.87029,
+			-62.1876,
+			4.22
+		],
+		[
+			18.90841,
+			36.8986,
+			4.22
+		],
+		[
+			20.76104,
+			30.7197,
+			4.22
+		],
+		[
+			21.29027,
+			39.3947,
+			4.22
+		],
+		[
+			23.23871,
+			-6.049,
+			4.22
+		],
+		[
+			.33452,
+			-64.8748,
+			4.23
+		],
+		[
+			7.72187,
+			28.8835,
+			4.23
+		],
+		[
+			13.19789,
+			27.8782,
+			4.23
+		],
+		[
+			13.76146,
+			-33.0437,
+			4.23
+		],
+		[
+			14.02744,
+			1.5445,
+			4.23
+		],
+		[
+			16.14616,
+			44.9349,
+			4.23
+		],
+		[
+			16.71796,
+			-77.5174,
+			4.23
+		],
+		[
+			19.10697,
+			-37.0634,
+			4.23
+		],
+		[
+			21.72513,
+			58.78,
+			4.23
+		],
+		[
+			21.77989,
+			49.3096,
+			4.23
+		],
+		[
+			1.1458,
+			86.2571,
+			4.24
+		],
+		[
+			2.44975,
+			-47.7038,
+			4.24
+		],
+		[
+			2.73537,
+			-13.8587,
+			4.24
+		],
+		[
+			12.30579,
+			-79.3122,
+			4.24
+		],
+		[
+			12.56237,
+			41.3575,
+			4.24
+		],
+		[
+			16.52304,
+			-34.7044,
+			4.24
+		],
+		[
+			17.69024,
+			-12.8753,
+			4.24
+		],
+		[
+			23.26486,
+			-9.0877,
+			4.24
+		],
+		[
+			1.26282,
+			-68.8759,
+			4.25
+		],
+		[
+			4.10973,
+			50.3513,
+			4.25
+		],
+		[
+			4.59424,
+			10.1608,
+			4.25
+		],
+		[
+			4.61151,
+			41.2648,
+			4.25
+		],
+		[
+			5.15244,
+			-8.7541,
+			4.25
+		],
+		[
+			8.38059,
+			43.1881,
+			4.25
+		],
+		[
+			12.89061,
+			-40.1789,
+			4.25
+		],
+		[
+			14.45876,
+			75.696,
+			4.25
+		],
+		[
+			21.75748,
+			61.1208,
+			4.25
+		],
+		[
+			1.15837,
+			47.2418,
+			4.26
+		],
+		[
+			1.75657,
+			9.1577,
+			4.26
+		],
+		[
+			3.33213,
+			-43.0698,
+			4.26
+		],
+		[
+			3.56313,
+			-21.6329,
+			4.26
+		],
+		[
+			4.26711,
+			-51.4866,
+			4.26
+		],
+		[
+			4.90083,
+			66.3427,
+			4.26
+		],
+		[
+			8.97479,
+			11.8577,
+			4.26
+		],
+		[
+			17.60912,
+			-38.6353,
+			4.26
+		],
+		[
+			18.02511,
+			21.5958,
+			4.26
+		],
+		[
+			22.06318,
+			64.628,
+			4.26
+		],
+		[
+			1.04906,
+			7.8901,
+			4.27
+		],
+		[
+			2.74904,
+			10.1141,
+			4.27
+		],
+		[
+			4.25891,
+			8.8924,
+			4.27
+		],
+		[
+			4.63596,
+			12.5108,
+			4.27
+		],
+		[
+			4.70409,
+			22.9569,
+			4.27
+		],
+		[
+			13.11518,
+			-49.9062,
+			4.27
+		],
+		[
+			15.30889,
+			-47.8753,
+			4.27
+		],
+		[
+			19.38698,
+			-44.7998,
+			4.27
+		],
+		[
+			20.77764,
+			16.1243,
+			4.27
+		],
+		[
+			23.46614,
+			6.379,
+			4.27
+		],
+		[
+			4.43846,
+			22.8136,
+			4.28
+		],
+		[
+			9.61813,
+			81.3264,
+			4.28
+		],
+		[
+			10.45253,
+			-31.0678,
+			4.28
+		],
+		[
+			17.45591,
+			-29.867,
+			4.28
+		],
+		[
+			20.22329,
+			56.5677,
+			4.28
+		],
+		[
+			21.37078,
+			-16.8345,
+			4.28
+		],
+		[
+			22.16646,
+			33.1782,
+			4.28
+		],
+		[
+			23.11465,
+			-43.5204,
+			4.28
+		],
+		[
+			3.61455,
+			.4017,
+			4.29
+		],
+		[
+			5.32626,
+			-13.1768,
+			4.29
+		],
+		[
+			10.65511,
+			-55.6033,
+			4.29
+		],
+		[
+			11.88181,
+			-33.9081,
+			4.29
+		],
+		[
+			15.73431,
+			77.7945,
+			4.29
+		],
+		[
+			16.51899,
+			-16.6127,
+			4.29
+		],
+		[
+			22.10729,
+			-13.8697,
+			4.29
+		],
+		[
+			22.52509,
+			-32.3461,
+			4.29
+		],
+		[
+			23.63561,
+			43.2681,
+			4.29
+		],
+		[
+			.97677,
+			-29.3574,
+			4.3
+		],
+		[
+			2.46932,
+			8.4601,
+			4.3
+		],
+		[
+			3.75347,
+			24.4673,
+			4.3
+		],
+		[
+			3.80997,
+			-37.6202,
+			4.3
+		],
+		[
+			4.42483,
+			17.9279,
+			4.3
+		],
+		[
+			5.99891,
+			45.9367,
+			4.3
+		],
+		[
+			8.72041,
+			3.3987,
+			4.3
+		],
+		[
+			10.92689,
+			24.7497,
+			4.3
+		],
+		[
+			11.61581,
+			-.8237,
+			4.3
+		],
+		[
+			11.82807,
+			-63.7885,
+			4.3
+		],
+		[
+			12.53451,
+			-16.196,
+			4.3
+		],
+		[
+			14.33876,
+			-56.3865,
+			4.3
+		],
+		[
+			20.29413,
+			-12.5082,
+			4.3
+		],
+		[
+			8.67695,
+			-59.761,
+			4.31
+		],
+		[
+			14.44867,
+			-83.6679,
+			4.31
+		],
+		[
+			15.40817,
+			37.3772,
+			4.31
+		],
+		[
+			16.12343,
+			-20.8688,
+			4.31
+		],
+		[
+			20.63897,
+			-1.1051,
+			4.31
+		],
+		[
+			3.60816,
+			48.1926,
+			4.32
+		],
+		[
+			4.67403,
+			-19.6715,
+			4.32
+		],
+		[
+			5.53687,
+			18.5942,
+			4.32
+		],
+		[
+			6.2563,
+			29.4981,
+			4.32
+		],
+		[
+			8.77293,
+			-13.5477,
+			4.32
+		],
+		[
+			9.52867,
+			22.968,
+			4.32
+		],
+		[
+			12.05042,
+			-63.3129,
+			4.32
+		],
+		[
+			13.16647,
+			17.5294,
+			4.32
+		],
+		[
+			13.86378,
+			-32.9941,
+			4.32
+		],
+		[
+			14.86064,
+			-43.5754,
+			4.32
+		],
+		[
+			17.34713,
+			-12.8469,
+			4.32
+		],
+		[
+			7.46939,
+			8.9255,
+			4.33
+		],
+		[
+			12.88525,
+			-48.9433,
+			4.33
+		],
+		[
+			14.43634,
+			-45.3793,
+			4.33
+		],
+		[
+			17.25583,
+			-26.6028,
+			4.33
+		],
+		[
+			18.14301,
+			-63.6686,
+			4.33
+		],
+		[
+			18.33103,
+			36.0645,
+			4.33
+		],
+		[
+			.61468,
+			33.7193,
+			4.34
+		],
+		[
+			.64259,
+			29.3118,
+			4.34
+		],
+		[
+			1.18505,
+			55.1499,
+			4.34
+		],
+		[
+			5.74621,
+			-65.7355,
+			4.34
+		],
+		[
+			6.53093,
+			-23.4184,
+			4.34
+		],
+		[
+			8.34404,
+			-77.4845,
+			4.34
+		],
+		[
+			9.27002,
+			-57.5415,
+			4.34
+		],
+		[
+			9.61376,
+			-49.355,
+			4.34
+		],
+		[
+			14.02875,
+			-45.6034,
+			4.34
+		],
+		[
+			15.63423,
+			-42.5673,
+			4.34
+		],
+		[
+			17.44191,
+			4.1404,
+			4.34
+		],
+		[
+			18.74621,
+			37.6051,
+			4.34
+		],
+		[
+			18.78369,
+			18.1815,
+			4.34
+		],
+		[
+			21.74186,
+			17.35,
+			4.34
+		],
+		[
+			22.49217,
+			47.7069,
+			4.34
+		],
+		[
+			3.19383,
+			19.7267,
+			4.35
+		],
+		[
+			4.84353,
+			8.9002,
+			4.35
+		],
+		[
+			6.58294,
+			-52.9756,
+			4.35
+		],
+		[
+			6.95461,
+			58.4228,
+			4.35
+		],
+		[
+			8.13217,
+			-68.6171,
+			4.35
+		],
+		[
+			8.80721,
+			5.8378,
+			4.35
+		],
+		[
+			12.44897,
+			28.2684,
+			4.35
+		],
+		[
+			15.29718,
+			-30.1487,
+			4.35
+		],
+		[
+			17.53695,
+			86.5865,
+			4.35
+		],
+		[
+			18.38712,
+			-61.4939,
+			4.35
+		],
+		[
+			19.27281,
+			38.1337,
+			4.35
+		],
+		[
+			21.74911,
+			-33.0258,
+			4.35
+		],
+		[
+			.52574,
+			-62.9582,
+			4.36
+		],
+		[
+			.72257,
+			-57.4631,
+			4.36
+		],
+		[
+			2.21667,
+			8.8467,
+			4.36
+		],
+		[
+			3.50958,
+			47.9952,
+			4.36
+		],
+		[
+			4.07825,
+			22.0819,
+			4.36
+		],
+		[
+			4.88157,
+			-5.4527,
+			4.36
+		],
+		[
+			5.22052,
+			-12.9413,
+			4.36
+		],
+		[
+			5.95895,
+			-35.2833,
+			4.36
+		],
+		[
+			6.93562,
+			-17.0542,
+			4.36
+		],
+		[
+			8.14323,
+			-2.9838,
+			4.36
+		],
+		[
+			14.10077,
+			-41.1796,
+			4.36
+		],
+		[
+			19.61202,
+			-1.2866,
+			4.36
+		],
+		[
+			.03267,
+			-6.0141,
+			4.37
+		],
+		[
+			6.27587,
+			-35.1405,
+			4.37
+		],
+		[
+			7.3118,
+			-24.9544,
+			4.37
+		],
+		[
+			11.00257,
+			-42.2259,
+			4.37
+		],
+		[
+			18.14597,
+			20.8146,
+			4.37
+		],
+		[
+			19.99561,
+			-35.2763,
+			4.37
+		],
+		[
+			13.16583,
+			-5.539,
+			4.38
+		],
+		[
+			20.14815,
+			77.7114,
+			4.38
+		],
+		[
+			23.43411,
+			-20.642,
+			4.38
+		],
+		[
+			23.54951,
+			-37.8183,
+			4.38
+		],
+		[
+			1.89409,
+			-46.3027,
+			4.39
+		],
+		[
+			3.82535,
+			65.526,
+			4.39
+		],
+		[
+			5.58035,
+			9.4896,
+			4.39
+		],
+		[
+			5.90639,
+			20.2762,
+			4.39
+		],
+		[
+			6.39613,
+			4.5929,
+			4.39
+		],
+		[
+			8.03776,
+			2.3346,
+			4.39
+		],
+		[
+			10.13174,
+			9.9975,
+			4.39
+		],
+		[
+			15.04835,
+			2.0913,
+			4.39
+		],
+		[
+			16.90013,
+			10.1654,
+			4.39
+		],
+		[
+			17.35011,
+			-21.1129,
+			4.39
+		],
+		[
+			19.66827,
+			18.0139,
+			4.39
+		],
+		[
+			19.68415,
+			17.476,
+			4.39
+		],
+		[
+			21.33111,
+			-53.4494,
+			4.39
+		],
+		[
+			.95345,
+			23.4176,
+			4.4
+		],
+		[
+			7.80143,
+			-25.9372,
+			4.4
+		],
+		[
+			8.15045,
+			-19.245,
+			4.4
+		],
+		[
+			18.94917,
+			-67.2335,
+			4.4
+		],
+		[
+			21.9653,
+			-54.9926,
+			4.4
+		],
+		[
+			6.83092,
+			-53.6224,
+			4.41
+		],
+		[
+			7.18566,
+			30.2452,
+			4.41
+		],
+		[
+			14.38395,
+			-39.5118,
+			4.41
+		],
+		[
+			17.51231,
+			26.1106,
+			4.41
+		],
+		[
+			17.97504,
+			30.1893,
+			4.41
+		],
+		[
+			21.29863,
+			34.8969,
+			4.41
+		],
+		[
+			23.13163,
+			75.3875,
+			4.41
+		],
+		[
+			23.29839,
+			-9.1825,
+			4.41
+		],
+		[
+			23.31373,
+			-32.532,
+			4.41
+		],
+		[
+			6.1262,
+			14.7685,
+			4.42
+		],
+		[
+			6.63151,
+			-18.2375,
+			4.42
+		],
+		[
+			7.22565,
+			-44.6397,
+			4.42
+		],
+		[
+			7.23756,
+			-26.3525,
+			4.42
+		],
+		[
+			8.23415,
+			-40.3479,
+			4.42
+		],
+		[
+			11.03883,
+			20.1798,
+			4.42
+		],
+		[
+			14.83814,
+			-27.9604,
+			4.42
+		],
+		[
+			15.77406,
+			7.3531,
+			4.42
+		],
+		[
+			18.02922,
+			1.3051,
+			4.42
+		],
+		[
+			22.39267,
+			52.229,
+			4.42
+		],
+		[
+			23.42299,
+			23.4041,
+			4.42
+		],
+		[
+			3.76904,
+			-12.1016,
+			4.43
+		],
+		[
+			4.25453,
+			-7.6529,
+			4.43
+		],
+		[
+			4.95478,
+			53.7521,
+			4.43
+		],
+		[
+			19.2293,
+			39.146,
+			4.43
+		],
+		[
+			20.0443,
+			-27.7098,
+			4.43
+		],
+		[
+			20.39767,
+			32.1902,
+			4.43
+		],
+		[
+			20.72431,
+			15.0746,
+			4.43
+		],
+		[
+			20.79562,
+			-5.0277,
+			4.43
+		],
+		[
+			.24401,
+			-18.9329,
+			4.44
+		],
+		[
+			.81137,
+			7.5851,
+			4.44
+		],
+		[
+			4.27473,
+			-59.3022,
+			4.44
+		],
+		[
+			4.67603,
+			-41.8638,
+			4.44
+		],
+		[
+			6.32705,
+			59.011,
+			4.44
+		],
+		[
+			7.56755,
+			-22.2961,
+			4.44
+		],
+		[
+			8.18931,
+			-39.6185,
+			4.44
+		],
+		[
+			8.30925,
+			-36.6593,
+			4.44
+		],
+		[
+			14.54363,
+			-50.4572,
+			4.44
+		],
+		[
+			19.47843,
+			24.6649,
+			4.44
+		],
+		[
+			1.69053,
+			5.4876,
+			4.45
+		],
+		[
+			2.81817,
+			-32.4059,
+			4.45
+		],
+		[
+			5.20497,
+			-11.8692,
+			4.45
+		],
+		[
+			6.199,
+			14.2088,
+			4.45
+		],
+		[
+			8.64595,
+			3.3414,
+			4.45
+		],
+		[
+			9.0015,
+			-41.2536,
+			4.45
+		],
+		[
+			10.59314,
+			-57.5576,
+			4.45
+		],
+		[
+			10.76305,
+			-80.5402,
+			4.45
+		],
+		[
+			11.27769,
+			-3.6516,
+			4.45
+		],
+		[
+			16.53561,
+			-21.4664,
+			4.45
+		],
+		[
+			19.25918,
+			73.3555,
+			4.45
+		],
+		[
+			19.56815,
+			7.3789,
+			4.45
+		],
+		[
+			2.48443,
+			67.4025,
+			4.46
+		],
+		[
+			3.90486,
+			-2.9547,
+			4.46
+		],
+		[
+			5.22152,
+			2.8613,
+			4.46
+		],
+		[
+			9.14785,
+			51.6046,
+			4.46
+		],
+		[
+			11.1943,
+			-22.8258,
+			4.46
+		],
+		[
+			12.13479,
+			-50.6613,
+			4.46
+		],
+		[
+			16.45307,
+			-47.5548,
+			4.46
+		],
+		[
+			22.87543,
+			-32.8755,
+			4.46
+		],
+		[
+			2.75172,
+			-18.5726,
+			4.47
+		],
+		[
+			3.33899,
+			29.0485,
+			4.47
+		],
+		[
+			4.97581,
+			1.714,
+			4.47
+		],
+		[
+			6.4695,
+			-32.5801,
+			4.47
+		],
+		[
+			6.54839,
+			7.333,
+			4.47
+		],
+		[
+			7.97068,
+			-49.2449,
+			4.47
+		],
+		[
+			9.08578,
+			-72.6027,
+			4.47
+		],
+		[
+			9.41091,
+			26.1823,
+			4.47
+		],
+		[
+			9.5804,
+			52.0515,
+			4.47
+		],
+		[
+			11.85241,
+			-45.1735,
+			4.47
+		],
+		[
+			14.57801,
+			29.7451,
+			4.47
+		],
+		[
+			14.95305,
+			-4.3465,
+			4.47
+		],
+		[
+			21.24134,
+			10.007,
+			4.47
+		],
+		[
+			22.10191,
+			-39.5434,
+			4.47
+		],
+		[
+			.74542,
+			48.2844,
+			4.48
+		],
+		[
+			4.01495,
+			-62.1593,
+			4.48
+		],
+		[
+			4.43909,
+			15.6183,
+			4.48
+		],
+		[
+			6.79768,
+			2.4122,
+			4.48
+		],
+		[
+			10.1323,
+			-.3716,
+			4.48
+		],
+		[
+			15.38963,
+			-59.3208,
+			4.48
+		],
+		[
+			16.40172,
+			-20.0373,
+			4.48
+		],
+		[
+			23.06461,
+			3.82,
+			4.48
+		],
+		[
+			23.11135,
+			-23.7431,
+			4.48
+		],
+		[
+			2.03263,
+			70.907,
+			4.49
+		],
+		[
+			4.55849,
+			-29.7665,
+			4.49
+		],
+		[
+			6.73314,
+			13.228,
+			4.49
+		],
+		[
+			7.20934,
+			-46.7593,
+			4.49
+		],
+		[
+			7.8774,
+			-38.8628,
+			4.49
+		],
+		[
+			10.12382,
+			35.2447,
+			4.49
+		],
+		[
+			14.67877,
+			16.4183,
+			4.49
+		],
+		[
+			19.60737,
+			50.2211,
+			4.49
+		],
+		[
+			21.11879,
+			-25.0059,
+			4.49
+		],
+		[
+			21.73571,
+			28.7426,
+			4.49
+		],
+		[
+			23.70078,
+			1.78,
+			4.49
+		],
+		[
+			23.71204,
+			-14.5449,
+			4.49
+		],
+		[
+			23.99861,
+			-65.5771,
+			4.49
+		],
+		[
+			5.65309,
+			4.1215,
+			4.5
+		],
+		[
+			5.83046,
+			-56.1667,
+			4.5
+		],
+		[
+			8.77849,
+			-56.7698,
+			4.5
+		],
+		[
+			10.34855,
+			-56.0432,
+			4.5
+		],
+		[
+			11.79976,
+			20.2189,
+			4.5
+		],
+		[
+			13.78771,
+			17.4569,
+			4.5
+		],
+		[
+			20.26281,
+			27.8142,
+			4.5
+		],
+		[
+			21.1599,
+			-11.3717,
+			4.5
+		],
+		[
+			21.47872,
+			-21.8072,
+			4.5
+		],
+		[
+			22.13973,
+			-32.9885,
+			4.5
+		],
+		[
+			22.23131,
+			39.7149,
+			4.5
+		],
+		[
+			22.67524,
+			44.2763,
+			4.5
+		],
+		[
+			.30546,
+			36.7852,
+			4.51
+		],
+		[
+			1.19435,
+			30.0896,
+			4.51
+		],
+		[
+			5.81957,
+			39.1811,
+			4.51
+		],
+		[
+			9.48742,
+			-35.9513,
+			4.51
+		],
+		[
+			9.65583,
+			-61.3281,
+			4.51
+		],
+		[
+			15.69251,
+			19.6704,
+			4.51
+		],
+		[
+			20.04697,
+			67.8736,
+			4.51
+		],
+		[
+			20.73398,
+			-51.921,
+			4.51
+		],
+		[
+			21.61801,
+			-19.466,
+			4.51
+		],
+		[
+			22.45555,
+			-64.9664,
+			4.51
+		],
+		[
+			23.9064,
+			57.4994,
+			4.51
+		],
+		[
+			2.79849,
+			29.2471,
+			4.52
+		],
+		[
+			13.37721,
+			-60.9884,
+			4.52
+		],
+		[
+			13.40013,
+			-64.5357,
+			4.52
+		],
+		[
+			14.3185,
+			-13.3711,
+			4.52
+		],
+		[
+			15.07409,
+			26.9476,
+			4.52
+		],
+		[
+			18.18715,
+			-45.9544,
+			4.52
+		],
+		[
+			19.36212,
+			-15.955,
+			4.52
+		],
+		[
+			20.75587,
+			57.5797,
+			4.52
+		],
+		[
+			21.49914,
+			23.6388,
+			4.52
+		],
+		[
+			22.50813,
+			43.1234,
+			4.52
+		],
+		[
+			.52597,
+			-62.9656,
+			4.53
+		],
+		[
+			.83023,
+			41.0789,
+			4.53
+		],
+		[
+			6.00093,
+			-3.0743,
+			4.53
+		],
+		[
+			7.62281,
+			-34.9685,
+			4.53
+		],
+		[
+			14.22473,
+			51.79,
+			4.53
+		],
+		[
+			17.44385,
+			-5.0866,
+			4.53
+		],
+		[
+			17.79267,
+			-27.8308,
+			4.53
+		],
+		[
+			20.79015,
+			36.4907,
+			4.53
+		],
+		[
+			23.20917,
+			49.4062,
+			4.53
+		],
+		[
+			5.30293,
+			33.3716,
+			4.54
+		],
+		[
+			6.58427,
+			-22.9648,
+			4.54
+		],
+		[
+			9.53303,
+			-1.1847,
+			4.54
+		],
+		[
+			9.57039,
+			36.3976,
+			4.54
+		],
+		[
+			9.57468,
+			69.8303,
+			4.54
+		],
+		[
+			14.85649,
+			19.1005,
+			4.54
+		],
+		[
+			15.20369,
+			-19.7917,
+			4.54
+		],
+		[
+			15.38593,
+			-36.8585,
+			4.54
+		],
+		[
+			19.94912,
+			-27.1699,
+			4.54
+		],
+		[
+			23.11674,
+			9.4095,
+			4.54
+		],
+		[
+			23.48591,
+			12.7606,
+			4.54
+		],
+		[
+			.06233,
+			-17.336,
+			4.55
+		],
+		[
+			3.49854,
+			58.8787,
+			4.55
+		],
+		[
+			5.07345,
+			-35.483,
+			4.55
+		],
+		[
+			7.00112,
+			76.9774,
+			4.55
+		],
+		[
+			7.49661,
+			12.0066,
+			4.55
+		],
+		[
+			9.86843,
+			54.0643,
+			4.55
+		],
+		[
+			15.59813,
+			-44.9584,
+			4.55
+		],
+		[
+			16.34394,
+			-24.1693,
+			4.55
+		],
+		[
+			18.13471,
+			-28.4571,
+			4.55
+		],
+		[
+			21.69869,
+			71.3114,
+			4.55
+		],
+		[
+			22.35043,
+			46.5366,
+			4.55
+		],
+		[
+			22.40861,
+			49.4764,
+			4.55
+		],
+		[
+			2.85857,
+			35.0597,
+			4.56
+		],
+		[
+			3.9791,
+			-61.4002,
+			4.56
+		],
+		[
+			5.88879,
+			27.6123,
+			4.56
+		],
+		[
+			9.10883,
+			38.4522,
+			4.56
+		],
+		[
+			11.2534,
+			23.0955,
+			4.56
+		],
+		[
+			14.43562,
+			-45.2214,
+			4.56
+		],
+		[
+			17.59433,
+			-46.5057,
+			4.56
+		],
+		[
+			20.8688,
+			27.097,
+			4.56
+		],
+		[
+			21.11003,
+			47.6484,
+			4.56
+		],
+		[
+			3.61825,
+			-40.2745,
+			4.57
+		],
+		[
+			16.4236,
+			14.0333,
+			4.57
+		],
+		[
+			16.42642,
+			-23.4472,
+			4.57
+		],
+		[
+			17.69899,
+			72.1488,
+			4.57
+		],
+		[
+			18.91247,
+			22.6451,
+			4.57
+		],
+		[
+			19.13916,
+			-40.4967,
+			4.57
+		],
+		[
+			19.89103,
+			24.0796,
+			4.57
+		],
+		[
+			5.58977,
+			-4.8384,
+			4.58
+		],
+		[
+			9.86129,
+			-46.5476,
+			4.58
+		],
+		[
+			10.72563,
+			-60.5666,
+			4.58
+		],
+		[
+			13.20489,
+			-59.9206,
+			4.58
+		],
+		[
+			13.85721,
+			64.7233,
+			4.58
+		],
+		[
+			16.20506,
+			-27.9264,
+			4.58
+		],
+		[
+			17.63075,
+			-8.1188,
+			4.58
+		],
+		[
+			23.34395,
+			23.7403,
+			4.58
+		],
+		[
+			.68877,
+			-46.085,
+			4.59
+		],
+		[
+			3.71391,
+			-37.3135,
+			4.59
+		],
+		[
+			3.83931,
+			71.3323,
+			4.59
+		],
+		[
+			5.44729,
+			3.0957,
+			4.59
+		],
+		[
+			8.67023,
+			64.3279,
+			4.59
+		],
+		[
+			9.48581,
+			-2.769,
+			4.59
+		],
+		[
+			10.32687,
+			-55.0293,
+			4.59
+		],
+		[
+			11.21001,
+			-60.3176,
+			4.59
+		],
+		[
+			15.82657,
+			26.0684,
+			4.59
+		],
+		[
+			15.89353,
+			-25.3271,
+			4.59
+		],
+		[
+			18.73966,
+			39.6127,
+			4.59
+		],
+		[
+			19.61179,
+			-24.8836,
+			4.59
+		],
+		[
+			23.81543,
+			-28.1303,
+			4.59
+		],
+		[
+			4.30406,
+			50.2955,
+			4.6
+		],
+		[
+			10.08541,
+			-13.0646,
+			4.6
+		],
+		[
+			10.94529,
+			-37.1378,
+			4.6
+		],
+		[
+			14.75402,
+			16.9643,
+			4.6
+		],
+		[
+			15.42228,
+			-38.7336,
+			4.6
+		],
+		[
+			15.87793,
+			42.4515,
+			4.6
+		],
+		[
+			19.34447,
+			65.7145,
+			4.6
+		],
+		[
+			.08893,
+			-5.7076,
+			4.61
+		],
+		[
+			.28486,
+			38.6816,
+			4.61
+		],
+		[
+			1.8926,
+			3.1875,
+			4.61
+		],
+		[
+			3.18816,
+			39.6116,
+			4.61
+		],
+		[
+			7.44523,
+			49.2115,
+			4.61
+		],
+		[
+			7.99779,
+			-18.3992,
+			4.61
+		],
+		[
+			15.56964,
+			-10.0645,
+			4.61
+		],
+		[
+			20.56505,
+			35.2509,
+			4.61
+		],
+		[
+			.94442,
+			59.1811,
+			4.62
+		],
+		[
+			3.99875,
+			-24.0162,
+			4.62
+		],
+		[
+			5.05159,
+			21.59,
+			4.62
+		],
+		[
+			5.53218,
+			-7.3015,
+			4.62
+		],
+		[
+			9.13413,
+			-25.8585,
+			4.62
+		],
+		[
+			11.08362,
+			7.336,
+			4.62
+		],
+		[
+			11.10901,
+			-62.4241,
+			4.62
+		],
+		[
+			11.57935,
+			-54.2641,
+			4.62
+		],
+		[
+			12.77297,
+			-56.4888,
+			4.62
+		],
+		[
+			12.91089,
+			-59.1467,
+			4.62
+		],
+		[
+			16.46339,
+			-8.3717,
+			4.62
+		],
+		[
+			18.00806,
+			-3.6903,
+			4.62
+		],
+		[
+			18.55839,
+			-42.3125,
+			4.62
+		],
+		[
+			18.93699,
+			4.2036,
+			4.62
+		],
+		[
+			2.98687,
+			21.3404,
+			4.63
+		],
+		[
+			7.72566,
+			-28.4109,
+			4.63
+		],
+		[
+			7.88434,
+			-49.613,
+			4.63
+		],
+		[
+			8.72788,
+			-7.2337,
+			4.63
+		],
+		[
+			9.26252,
+			-37.4131,
+			4.63
+		],
+		[
+			12.66459,
+			-39.9873,
+			4.63
+		],
+		[
+			13.67897,
+			54.6816,
+			4.63
+		],
+		[
+			14.95973,
+			65.9325,
+			4.63
+		],
+		[
+			15.84965,
+			-25.7513,
+			4.63
+		],
+		[
+			16.05891,
+			-57.7751,
+			4.63
+		],
+		[
+			18.52289,
+			-62.2783,
+			4.63
+		],
+		[
+			18.85336,
+			59.3884,
+			4.63
+		],
+		[
+			23.96265,
+			25.1414,
+			4.63
+		],
+		[
+			3.89519,
+			-24.6122,
+			4.64
+		],
+		[
+			4.91493,
+			10.1508,
+			4.64
+		],
+		[
+			6.06533,
+			20.1385,
+			4.64
+		],
+		[
+			13.77761,
+			-51.4328,
+			4.64
+		],
+		[
+			15.6563,
+			36.6358,
+			4.64
+		],
+		[
+			15.68649,
+			-44.6612,
+			4.64
+		],
+		[
+			16.83057,
+			-10.783,
+			4.64
+		],
+		[
+			17.29451,
+			37.2915,
+			4.64
+		],
+		[
+			18.12177,
+			8.7339,
+			4.64
+		],
+		[
+			19.44197,
+			.3386,
+			4.64
+		],
+		[
+			20.58848,
+			14.6742,
+			4.64
+		],
+		[
+			22.62289,
+			51.5451,
+			4.64
+		],
+		[
+			23.06972,
+			50.0521,
+			4.64
+		],
+		[
+			2.7242,
+			27.7071,
+			4.65
+		],
+		[
+			4.56415,
+			14.8444,
+			4.65
+		],
+		[
+			5.07615,
+			15.4041,
+			4.65
+		],
+		[
+			5.90168,
+			-63.0896,
+			4.65
+		],
+		[
+			7.30511,
+			-36.734,
+			4.65
+		],
+		[
+			7.51183,
+			-30.9623,
+			4.65
+		],
+		[
+			7.58969,
+			-28.3693,
+			4.65
+		],
+		[
+			10.4568,
+			-57.6388,
+			4.65
+		],
+		[
+			12.01455,
+			6.6143,
+			4.65
+		],
+		[
+			16.05358,
+			-49.2297,
+			4.65
+		],
+		[
+			1.19089,
+			21.0347,
+			4.66
+		],
+		[
+			1.82642,
+			-10.6864,
+			4.66
+		],
+		[
+			6.68296,
+			9.8958,
+			4.66
+		],
+		[
+			6.92707,
+			-20.1365,
+			4.66
+		],
+		[
+			7.27639,
+			-27.8812,
+			4.66
+		],
+		[
+			8.72143,
+			21.4685,
+			4.66
+		],
+		[
+			9.09399,
+			-70.5385,
+			4.66
+		],
+		[
+			10.89965,
+			43.19,
+			4.66
+		],
+		[
+			12.6541,
+			-7.9956,
+			4.66
+		],
+		[
+			12.70985,
+			-48.8131,
+			4.66
+		],
+		[
+			15.66277,
+			-34.4119,
+			4.66
+		],
+		[
+			18.08367,
+			-29.5801,
+			4.66
+		],
+		[
+			18.30089,
+			-27.0426,
+			4.66
+		],
+		[
+			18.39433,
+			-8.9344,
+			4.66
+		],
+		[
+			20.01835,
+			27.7536,
+			4.66
+		],
+		[
+			1.22915,
+			24.5837,
+			4.67
+		],
+		[
+			3.48946,
+			49.5089,
+			4.67
+		],
+		[
+			4.24815,
+			40.4837,
+			4.67
+		],
+		[
+			4.65459,
+			15.918,
+			4.67
+		],
+		[
+			6.10259,
+			-14.9353,
+			4.67
+		],
+		[
+			8.20353,
+			17.6478,
+			4.67
+		],
+		[
+			9.18196,
+			63.5136,
+			4.67
+		],
+		[
+			18.00095,
+			16.7509,
+			4.67
+		],
+		[
+			18.48663,
+			-14.5658,
+			4.67
+		],
+		[
+			18.73899,
+			39.6701,
+			4.67
+		],
+		[
+			19.53933,
+			69.6612,
+			4.67
+		],
+		[
+			21.02152,
+			-32.2578,
+			4.67
+		],
+		[
+			1.56552,
+			59.232,
+			4.68
+		],
+		[
+			1.91559,
+			-67.6473,
+			4.68
+		],
+		[
+			2.07485,
+			-29.2968,
+			4.68
+		],
+		[
+			2.97935,
+			39.6627,
+			4.68
+		],
+		[
+			8.93869,
+			-52.7235,
+			4.68
+		],
+		[
+			9.64091,
+			4.6493,
+			4.68
+		],
+		[
+			10.00356,
+			8.0442,
+			4.68
+		],
+		[
+			10.64534,
+			31.9762,
+			4.68
+		],
+		[
+			13.53275,
+			-6.2558,
+			4.68
+		],
+		[
+			13.57424,
+			49.016,
+			4.68
+		],
+		[
+			16.33911,
+			-78.6957,
+			4.68
+		],
+		[
+			19.65628,
+			30.1533,
+			4.68
+		],
+		[
+			21.6292,
+			-7.8542,
+			4.68
+		],
+		[
+			22.72645,
+			-18.8304,
+			4.68
+		],
+		[
+			4.44344,
+			14.7138,
+			4.69
+		],
+		[
+			5.31902,
+			40.0991,
+			4.69
+		],
+		[
+			7.63835,
+			-25.3648,
+			4.69
+		],
+		[
+			7.8056,
+			-47.0777,
+			4.69
+		],
+		[
+			8.02037,
+			-1.3926,
+			4.69
+		],
+		[
+			10.64583,
+			-59.183,
+			4.69
+		],
+		[
+			12.76057,
+			-60.9813,
+			4.69
+		],
+		[
+			21.70157,
+			51.1896,
+			4.69
+		],
+		[
+			22.05601,
+			-56.786,
+			4.69
+		],
+		[
+			23.5846,
+			-42.6151,
+			4.69
+		],
+		[
+			5.34081,
+			-21.2398,
+			4.7
+		],
+		[
+			11.61137,
+			-9.8022,
+			4.7
+		],
+		[
+			11.67022,
+			-34.7447,
+			4.7
+		],
+		[
+			16.89993,
+			-42.362,
+			4.7
+		],
+		[
+			18.70456,
+			-9.0525,
+			4.7
+		],
+		[
+			19.93065,
+			-26.2995,
+			4.7
+		],
+		[
+			21.17236,
+			10.1316,
+			4.7
+		],
+		[
+			22.90693,
+			84.3462,
+			4.7
+		],
+		[
+			23.55462,
+			-20.9145,
+			4.7
+		],
+		[
+			2.99525,
+			8.9074,
+			4.71
+		],
+		[
+			3.48963,
+			-62.9375,
+			4.71
+		],
+		[
+			4.87555,
+			14.2506,
+			4.71
+		],
+		[
+			5.09185,
+			-57.4727,
+			4.71
+		],
+		[
+			5.49555,
+			-1.0922,
+			4.71
+		],
+		[
+			5.54547,
+			32.192,
+			4.71
+		],
+		[
+			9.35822,
+			-25.9654,
+			4.71
+		],
+		[
+			9.38673,
+			-28.8339,
+			4.71
+		],
+		[
+			11.74605,
+			-18.3507,
+			4.71
+		],
+		[
+			13.10464,
+			-48.4633,
+			4.71
+		],
+		[
+			13.9608,
+			-63.6867,
+			4.71
+		],
+		[
+			19.90413,
+			8.4615,
+			4.71
+		],
+		[
+			21.29897,
+			-32.1725,
+			4.71
+		],
+		[
+			23.16525,
+			-22.4576,
+			4.71
+		],
+		[
+			1.43223,
+			68.13,
+			4.72
+		],
+		[
+			5.36271,
+			-.3825,
+			4.72
+		],
+		[
+			5.85068,
+			37.3056,
+			4.72
+		],
+		[
+			6.17164,
+			-54.9686,
+			4.72
+		],
+		[
+			8.18786,
+			-12.927,
+			4.72
+		],
+		[
+			9.45511,
+			-22.3438,
+			4.72
+		],
+		[
+			10.43189,
+			33.7961,
+			4.72
+		],
+		[
+			10.50559,
+			-71.9928,
+			4.72
+		],
+		[
+			10.55386,
+			40.4256,
+			4.72
+		],
+		[
+			12.07201,
+			-63.1657,
+			4.72
+		],
+		[
+			12.34529,
+			17.7929,
+			4.72
+		],
+		[
+			13.29237,
+			40.5726,
+			4.72
+		],
+		[
+			16.04664,
+			46.0367,
+			4.72
+		],
+		[
+			17.27686,
+			-.4453,
+			4.72
+		],
+		[
+			21.71097,
+			-18.8663,
+			4.72
+		],
+		[
+			2.42706,
+			50.2786,
+			4.73
+		],
+		[
+			6.91073,
+			13.1778,
+			4.73
+		],
+		[
+			8.19053,
+			-42.9873,
+			4.73
+		],
+		[
+			11.03047,
+			-2.4846,
+			4.73
+		],
+		[
+			16.10818,
+			-45.1732,
+			4.73
+		],
+		[
+			16.14953,
+			36.4909,
+			4.73
+		],
+		[
+			20.87757,
+			-8.9833,
+			4.73
+		],
+		[
+			.52955,
+			54.5223,
+			4.74
+		],
+		[
+			1.32444,
+			27.2641,
+			4.74
+		],
+		[
+			2.53479,
+			-15.2447,
+			4.74
+		],
+		[
+			2.66333,
+			-42.8917,
+			4.74
+		],
+		[
+			3.33313,
+			65.6523,
+			4.74
+		],
+		[
+			3.51029,
+			-5.0751,
+			4.74
+		],
+		[
+			8.15019,
+			-61.3024,
+			4.74
+		],
+		[
+			8.68698,
+			-47.3171,
+			4.74
+		],
+		[
+			9.04241,
+			67.6296,
+			4.74
+		],
+		[
+			13.30675,
+			-18.3112,
+			4.74
+		],
+		[
+			14.16523,
+			-53.4389,
+			4.74
+		],
+		[
+			15.85442,
+			20.9779,
+			4.74
+		],
+		[
+			17.99654,
+			-23.8161,
+			4.74
+		],
+		[
+			19.05191,
+			-42.0951,
+			4.74
+		],
+		[
+			19.52953,
+			34.453,
+			4.74
+		],
+		[
+			20.9971,
+			47.521,
+			4.74
+		],
+		[
+			22.05523,
+			-2.1554,
+			4.74
+		],
+		[
+			23.63083,
+			-45.4924,
+			4.74
+		],
+		[
+			7.24393,
+			-48.2719,
+			4.75
+		],
+		[
+			11.80404,
+			-66.8149,
+			4.75
+		],
+		[
+			13.88681,
+			-31.9276,
+			4.75
+		],
+		[
+			14.26943,
+			51.3672,
+			4.75
+		],
+		[
+			15.69911,
+			-19.6788,
+			4.75
+		],
+		[
+			15.71139,
+			-34.7104,
+			4.75
+		],
+		[
+			20.59301,
+			-60.5817,
+			4.75
+		],
+		[
+			23.31041,
+			68.1114,
+			4.75
+		],
+		[
+			.52361,
+			-48.8035,
+			4.76
+		],
+		[
+			2.84124,
+			-75.0669,
+			4.76
+		],
+		[
+			2.85065,
+			-21.004,
+			4.76
+		],
+		[
+			5.87401,
+			1.8551,
+			4.76
+		],
+		[
+			6.31411,
+			69.3198,
+			4.76
+		],
+		[
+			7.96114,
+			-30.3346,
+			4.76
+		],
+		[
+			9.68806,
+			-23.5915,
+			4.76
+		],
+		[
+			10.70392,
+			-64.4664,
+			4.76
+		],
+		[
+			11.31886,
+			38.1856,
+			4.76
+		],
+		[
+			12.40041,
+			51.5623,
+			4.76
+		],
+		[
+			12.98207,
+			17.4094,
+			4.76
+		],
+		[
+			13.45755,
+			-15.9736,
+			4.76
+		],
+		[
+			13.86319,
+			34.4442,
+			4.76
+		],
+		[
+			14.37697,
+			-58.4591,
+			4.76
+		],
+		[
+			17.36652,
+			-67.7707,
+			4.76
+		],
+		[
+			17.67329,
+			-49.4156,
+			4.76
+		],
+		[
+			19.27029,
+			21.3904,
+			4.76
+		],
+		[
+			21.63201,
+			62.0819,
+			4.76
+		],
+		[
+			23.11854,
+			25.4683,
+			4.76
+		],
+		[
+			.7365,
+			-10.6096,
+			4.77
+		],
+		[
+			3.09233,
+			56.7057,
+			4.77
+		],
+		[
+			5.64808,
+			-7.2128,
+			4.77
+		],
+		[
+			6.78884,
+			8.0373,
+			4.77
+		],
+		[
+			9.32955,
+			-11.9749,
+			4.77
+		],
+		[
+			11.50525,
+			-3.0035,
+			4.77
+		],
+		[
+			12.90588,
+			-9.539,
+			4.77
+		],
+		[
+			17.61586,
+			68.758,
+			4.77
+		],
+		[
+			18.05137,
+			-8.1803,
+			4.77
+		],
+		[
+			18.54292,
+			57.0456,
+			4.77
+		],
+		[
+			20.05929,
+			-37.9407,
+			4.77
+		],
+		[
+			20.29645,
+			38.0329,
+			4.77
+		],
+		[
+			20.34439,
+			-12.7591,
+			4.77
+		],
+		[
+			20.48101,
+			-17.8137,
+			4.77
+		],
+		[
+			22.79141,
+			83.1538,
+			4.77
+		],
+		[
+			.02659,
+			-77.0657,
+			4.78
+		],
+		[
+			.88347,
+			-1.1443,
+			4.78
+		],
+		[
+			2.14146,
+			37.8591,
+			4.78
+		],
+		[
+			3.76731,
+			63.345,
+			4.78
+		],
+		[
+			4.50934,
+			16.194,
+			4.78
+		],
+		[
+			4.99881,
+			-12.5374,
+			4.78
+		],
+		[
+			5.58408,
+			-6.002,
+			4.78
+		],
+		[
+			8.14096,
+			51.5067,
+			4.78
+		],
+		[
+			8.22487,
+			-35.8995,
+			4.78
+		],
+		[
+			9.73669,
+			-27.7695,
+			4.78
+		],
+		[
+			10.32893,
+			19.4709,
+			4.78
+		],
+		[
+			12.37509,
+			25.8462,
+			4.78
+		],
+		[
+			13.29341,
+			5.4699,
+			4.78
+		],
+		[
+			14.34516,
+			-45.1871,
+			4.78
+		],
+		[
+			14.38494,
+			-27.754,
+			4.78
+		],
+		[
+			17.5236,
+			-23.9626,
+			4.78
+		],
+		[
+			17.83642,
+			-40.0904,
+			4.78
+		],
+		[
+			18.75747,
+			-64.8713,
+			4.78
+		],
+		[
+			22.35537,
+			28.3305,
+			4.78
+		],
+		[
+			22.46431,
+			4.6957,
+			4.78
+		],
+		[
+			.24338,
+			20.2067,
+			4.79
+		],
+		[
+			1.96548,
+			23.5961,
+			4.79
+		],
+		[
+			4.87722,
+			36.7032,
+			4.79
+		],
+		[
+			8.37547,
+			-48.4904,
+			4.79
+		],
+		[
+			9.34911,
+			-62.4046,
+			4.79
+		],
+		[
+			13.25415,
+			-67.8946,
+			4.79
+		],
+		[
+			15.85387,
+			35.6574,
+			4.79
+		],
+		[
+			16.50347,
+			-25.1152,
+			4.79
+		],
+		[
+			17.81958,
+			-31.7032,
+			4.79
+		],
+		[
+			18.00439,
+			4.3686,
+			4.79
+		],
+		[
+			20.25441,
+			25.592,
+			4.79
+		],
+		[
+			22.16345,
+			72.3412,
+			4.79
+		],
+		[
+			22.26025,
+			-41.3467,
+			4.79
+		],
+		[
+			.70108,
+			50.5125,
+			4.8
+		],
+		[
+			.8845,
+			61.124,
+			4.8
+		],
+		[
+			3.26389,
+			-8.8197,
+			4.8
+		],
+		[
+			4.35921,
+			46.4989,
+			4.8
+		],
+		[
+			4.4016,
+			17.4441,
+			4.8
+		],
+		[
+			5.02399,
+			-7.174,
+			4.8
+		],
+		[
+			6.65551,
+			42.4889,
+			4.8
+		],
+		[
+			9.17321,
+			67.134,
+			4.8
+		],
+		[
+			9.26981,
+			54.0219,
+			4.8
+		],
+		[
+			9.34139,
+			-9.5557,
+			4.8
+		],
+		[
+			10.73525,
+			-63.9611,
+			4.8
+		],
+		[
+			12.58085,
+			22.6293,
+			4.8
+		],
+		[
+			13.11965,
+			27.6247,
+			4.8
+		],
+		[
+			14.14748,
+			77.5475,
+			4.8
+		],
+		[
+			14.29995,
+			35.5095,
+			4.8
+		],
+		[
+			14.72371,
+			26.5279,
+			4.8
+		],
+		[
+			15.03514,
+			25.0081,
+			4.8
+		],
+		[
+			16.30497,
+			-28.614,
+			4.8
+		],
+		[
+			17.28877,
+			33.1001,
+			4.8
+		],
+		[
+			20.22168,
+			46.8157,
+			4.8
+		],
+		[
+			20.88743,
+			44.3873,
+			4.8
+		],
+		[
+			21.34601,
+			-40.8095,
+			4.8
+		],
+		[
+			22.42129,
+			1.3774,
+			4.8
+		],
+		[
+			22.69595,
+			29.3076,
+			4.8
+		],
+		[
+			5.16165,
+			15.5972,
+			4.81
+		],
+		[
+			5.22929,
+			-67.1853,
+			4.81
+		],
+		[
+			5.29141,
+			-34.8952,
+			4.81
+		],
+		[
+			5.96657,
+			25.9539,
+			4.81
+		],
+		[
+			8.00555,
+			-63.5675,
+			4.81
+		],
+		[
+			9.5844,
+			39.6215,
+			4.81
+		],
+		[
+			11.41017,
+			-10.8593,
+			4.81
+		],
+		[
+			14.47004,
+			-2.228,
+			4.81
+		],
+		[
+			18.42251,
+			-20.5417,
+			4.81
+		],
+		[
+			20.64204,
+			21.2012,
+			4.81
+		],
+		[
+			20.81563,
+			46.1141,
+			4.81
+		],
+		[
+			1.9528,
+			-47.3853,
+			4.82
+		],
+		[
+			5.22381,
+			38.4845,
+			4.82
+		],
+		[
+			6.65465,
+			-14.1458,
+			4.82
+		],
+		[
+			6.89247,
+			-20.2243,
+			4.82
+		],
+		[
+			7.56332,
+			-14.5239,
+			4.82
+		],
+		[
+			10.37211,
+			-41.65,
+			4.82
+		],
+		[
+			10.51044,
+			55.9805,
+			4.82
+		],
+		[
+			12.44215,
+			-51.4506,
+			4.82
+		],
+		[
+			13.62434,
+			36.2949,
+			4.82
+		],
+		[
+			14.17331,
+			25.0917,
+			4.82
+		],
+		[
+			16.03825,
+			22.8045,
+			4.82
+		],
+		[
+			16.36787,
+			1.029,
+			4.82
+		],
+		[
+			16.82061,
+			45.9833,
+			4.82
+		],
+		[
+			17.01767,
+			-4.2226,
+			4.82
+		],
+		[
+			18.43309,
+			65.5635,
+			4.82
+		],
+		[
+			18.90663,
+			71.2972,
+			4.82
+		],
+		[
+			21.07342,
+			-19.855,
+			4.82
+		],
+		[
+			22.35863,
+			12.2052,
+			4.82
+		],
+		[
+			22.51078,
+			-10.678,
+			4.82
+		],
+		[
+			23.29573,
+			49.0153,
+			4.82
+		],
+		[
+			23.69606,
+			-17.8165,
+			4.82
+		],
+		[
+			.91671,
+			58.9727,
+			4.83
+		],
+		[
+			1.46094,
+			45.4067,
+			4.83
+		],
+		[
+			2.6594,
+			-11.8722,
+			4.83
+		],
+		[
+			2.75907,
+			-67.6166,
+			4.83
+		],
+		[
+			7.14752,
+			-39.6557,
+			4.83
+		],
+		[
+			7.2769,
+			-23.3156,
+			4.83
+		],
+		[
+			8.35639,
+			-33.0544,
+			4.83
+		],
+		[
+			8.70705,
+			-53.114,
+			4.83
+		],
+		[
+			13.05925,
+			-49.5273,
+			4.83
+		],
+		[
+			15.06314,
+			47.6541,
+			4.83
+		],
+		[
+			15.21377,
+			-44.5004,
+			4.83
+		],
+		[
+			16.47737,
+			41.8817,
+			4.83
+		],
+		[
+			17.08037,
+			-34.1229,
+			4.83
+		],
+		[
+			18.76791,
+			26.6621,
+			4.83
+		],
+		[
+			18.95102,
+			-5.8463,
+			4.83
+		],
+		[
+			18.97871,
+			-37.1074,
+			4.83
+		],
+		[
+			1.50309,
+			6.1438,
+			4.84
+		],
+		[
+			2.22037,
+			44.2317,
+			4.84
+		],
+		[
+			2.28423,
+			34.2242,
+			4.84
+		],
+		[
+			3.32269,
+			3.3702,
+			4.84
+		],
+		[
+			4.23233,
+			9.2638,
+			4.84
+		],
+		[
+			5.68825,
+			16.5341,
+			4.84
+		],
+		[
+			7.65759,
+			-38.308,
+			4.84
+		],
+		[
+			8.58881,
+			-58.0092,
+			4.84
+		],
+		[
+			11.00935,
+			3.6175,
+			4.84
+		],
+		[
+			11.75473,
+			8.2581,
+			4.84
+		],
+		[
+			14.32923,
+			16.3069,
+			4.84
+		],
+		[
+			16.54341,
+			11.488,
+			4.84
+		],
+		[
+			16.68198,
+			64.589,
+			4.84
+		],
+		[
+			16.75495,
+			56.7819,
+			4.84
+		],
+		[
+			19.98255,
+			-26.1958,
+			4.84
+		],
+		[
+			22.72499,
+			-41.4143,
+			4.84
+		],
+		[
+			22.76052,
+			-53.5001,
+			4.84
+		],
+		[
+			23.11023,
+			59.4198,
+			4.84
+		],
+		[
+			3.19897,
+			74.3937,
+			4.85
+		],
+		[
+			3.31217,
+			34.2227,
+			4.85
+		],
+		[
+			7.49761,
+			-23.0243,
+			4.85
+		],
+		[
+			10.14895,
+			-51.8113,
+			4.85
+		],
+		[
+			13.20089,
+			-37.803,
+			4.85
+		],
+		[
+			15.29413,
+			-63.6105,
+			4.85
+		],
+		[
+			17.94651,
+			-44.3422,
+			4.85
+		],
+		[
+			18.34779,
+			3.3772,
+			4.85
+		],
+		[
+			18.97438,
+			-52.9386,
+			4.85
+		],
+		[
+			.46547,
+			-33.0072,
+			4.86
+		],
+		[
+			3.30614,
+			-22.5111,
+			4.86
+		],
+		[
+			6.77059,
+			59.4417,
+			4.86
+		],
+		[
+			8.6618,
+			-29.5611,
+			4.86
+		],
+		[
+			10.58485,
+			75.7129,
+			4.86
+		],
+		[
+			13.28695,
+			-66.7834,
+			4.86
+		],
+		[
+			14.38964,
+			8.4466,
+			4.86
+		],
+		[
+			14.6941,
+			8.1618,
+			4.86
+		],
+		[
+			16.36829,
+			30.892,
+			4.86
+		],
+		[
+			16.56806,
+			-44.0453,
+			4.86
+		],
+		[
+			16.64579,
+			48.9283,
+			4.86
+		],
+		[
+			17.53779,
+			55.173,
+			4.86
+		],
+		[
+			17.72383,
+			-21.6832,
+			4.86
+		],
+		[
+			18.73871,
+			-35.642,
+			4.86
+		],
+		[
+			18.90283,
+			-22.7448,
+			4.86
+		],
+		[
+			19.25901,
+			-25.2567,
+			4.86
+		],
+		[
+			20.62647,
+			-61.5299,
+			4.86
+		],
+		[
+			22.09465,
+			5.0585,
+			4.86
+		],
+		[
+			1.37234,
+			45.5288,
+			4.87
+		],
+		[
+			2.59791,
+			5.5932,
+			4.87
+		],
+		[
+			3.24836,
+			21.0444,
+			4.87
+		],
+		[
+			4.23991,
+			-10.2563,
+			4.87
+		],
+		[
+			7.22037,
+			-45.1827,
+			4.87
+		],
+		[
+			8.69537,
+			-15.9434,
+			4.87
+		],
+		[
+			8.92543,
+			-27.6819,
+			4.87
+		],
+		[
+			9.90342,
+			-25.9323,
+			4.87
+		],
+		[
+			10.62048,
+			-27.4126,
+			4.87
+		],
+		[
+			10.78089,
+			-64.3835,
+			4.87
+		],
+		[
+			19.77271,
+			-19.7611,
+			4.87
+		],
+		[
+			21.5796,
+			38.5341,
+			4.87
+		],
+		[
+			2.4325,
+			-12.2905,
+			4.88
+		],
+		[
+			5.46058,
+			21.937,
+			4.88
+		],
+		[
+			5.81693,
+			24.5675,
+			4.88
+		],
+		[
+			5.88525,
+			-33.8014,
+			4.88
+		],
+		[
+			7.31121,
+			-24.5587,
+			4.88
+		],
+		[
+			11.99377,
+			-78.2218,
+			4.88
+		],
+		[
+			12.69807,
+			10.2356,
+			4.88
+		],
+		[
+			13.00457,
+			30.785,
+			4.88
+		],
+		[
+			16.9338,
+			65.1348,
+			4.88
+		],
+		[
+			17.96328,
+			-41.7163,
+			4.88
+		],
+		[
+			18.72535,
+			-8.2752,
+			4.88
+		],
+		[
+			19.29391,
+			-18.9529,
+			4.88
+		],
+		[
+			19.58694,
+			-48.0992,
+			4.88
+		],
+		[
+			23.78429,
+			58.652,
+			4.88
+		],
+		[
+			23.97788,
+			-3.556,
+			4.88
+		],
+		[
+			23.98348,
+			55.7549,
+			4.88
+		],
+		[
+			.18774,
+			-15.468,
+			4.89
+		],
+		[
+			4.83185,
+			37.4883,
+			4.89
+		],
+		[
+			5.41245,
+			1.8464,
+			4.89
+		],
+		[
+			5.82581,
+			12.6513,
+			4.89
+		],
+		[
+			7.65276,
+			34.5843,
+			4.89
+		],
+		[
+			7.76873,
+			18.51,
+			4.89
+		],
+		[
+			10.52273,
+			-53.7155,
+			4.89
+		],
+		[
+			10.62591,
+			-13.3845,
+			4.89
+		],
+		[
+			11.7753,
+			-40.5004,
+			4.89
+		],
+		[
+			11.86423,
+			-65.2059,
+			4.89
+		],
+		[
+			12.88826,
+			21.2449,
+			4.89
+		],
+		[
+			14.30386,
+			-81.0078,
+			4.89
+		],
+		[
+			17.08963,
+			12.7408,
+			4.89
+		],
+		[
+			17.53627,
+			55.1842,
+			4.89
+		],
+		[
+			19.73795,
+			37.3544,
+			4.89
+		],
+		[
+			20.8328,
+			-33.7797,
+			4.89
+		],
+		[
+			22.65435,
+			39.0503,
+			4.89
+		],
+		[
+			23.50054,
+			58.5489,
+			4.89
+		],
+		[
+			.81389,
+			50.9682,
+			4.9
+		],
+		[
+			1.42701,
+			-14.5988,
+			4.9
+		],
+		[
+			5.70795,
+			1.4746,
+			4.9
+		],
+		[
+			6.96031,
+			45.0941,
+			4.9
+		],
+		[
+			12.84477,
+			-33.9993,
+			4.9
+		],
+		[
+			13.23754,
+			-59.1032,
+			4.9
+		],
+		[
+			16.05672,
+			-38.6025,
+			4.9
+		],
+		[
+			16.09071,
+			-19.8019,
+			4.9
+		],
+		[
+			16.47449,
+			-70.0844,
+			4.9
+		],
+		[
+			19.85114,
+			22.61,
+			4.9
+		],
+		[
+			20.82471,
+			-46.2268,
+			4.9
+		],
+		[
+			2.70414,
+			40.1939,
+			4.91
+		],
+		[
+			4.53129,
+			-.044,
+			4.91
+		],
+		[
+			5.02377,
+			-20.0519,
+			4.91
+		],
+		[
+			5.12417,
+			18.6451,
+			4.91
+		],
+		[
+			6.33322,
+			-2.9445,
+			4.91
+		],
+		[
+			7.17047,
+			-4.2371,
+			4.91
+		],
+		[
+			7.19426,
+			39.3205,
+			4.91
+		],
+		[
+			10.64304,
+			-16.8766,
+			4.91
+		],
+		[
+			12.69905,
+			-59.6858,
+			4.91
+		],
+		[
+			13.57995,
+			37.1824,
+			4.91
+		],
+		[
+			15.01621,
+			-8.5189,
+			4.91
+		],
+		[
+			15.2437,
+			-31.5191,
+			4.91
+		],
+		[
+			16.69289,
+			-17.7422,
+			4.91
+		],
+		[
+			17.08892,
+			54.47,
+			4.91
+		],
+		[
+			19.92716,
+			52.4389,
+			4.91
+		],
+		[
+			20.49417,
+			-2.8855,
+			4.91
+		],
+		[
+			20.61212,
+			-2.55,
+			4.91
+		],
+		[
+			22.55002,
+			-61.9821,
+			4.91
+		],
+		[
+			22.92047,
+			8.8162,
+			4.91
+		],
+		[
+			1.9445,
+			-22.5268,
+			4.92
+		],
+		[
+			6.03067,
+			-10.5979,
+			4.92
+		],
+		[
+			6.08309,
+			-16.4844,
+			4.92
+		],
+		[
+			6.41497,
+			49.2879,
+			4.92
+		],
+		[
+			7.06489,
+			-49.5839,
+			4.92
+		],
+		[
+			7.51791,
+			82.4115,
+			4.92
+		],
+		[
+			9.2602,
+			-38.5699,
+			4.92
+		],
+		[
+			11.08886,
+			-27.2936,
+			4.92
+		],
+		[
+			12.44002,
+			27.2682,
+			4.92
+		],
+		[
+			13.56887,
+			3.659,
+			4.92
+		],
+		[
+			13.82857,
+			21.2641,
+			4.92
+		],
+		[
+			14.74978,
+			-35.1918,
+			4.92
+		],
+		[
+			15.4033,
+			-10.3223,
+			4.92
+		],
+		[
+			18.11386,
+			-43.4252,
+			4.92
+		],
+		[
+			18.33831,
+			21.9613,
+			4.92
+		],
+		[
+			18.52929,
+			-45.9148,
+			4.92
+		],
+		[
+			18.88709,
+			50.7082,
+			4.92
+		],
+		[
+			20.74792,
+			25.2706,
+			4.92
+		],
+		[
+			4.18072,
+			-41.9936,
+			4.93
+		],
+		[
+			4.28769,
+			20.5786,
+			4.93
+		],
+		[
+			4.34018,
+			34.5667,
+			4.93
+		],
+		[
+			4.98761,
+			37.8902,
+			4.93
+		],
+		[
+			7.59437,
+			-52.5338,
+			4.93
+		],
+		[
+			7.71678,
+			58.7104,
+			4.93
+		],
+		[
+			7.9956,
+			-3.6796,
+			4.93
+		],
+		[
+			8.94956,
+			-59.2293,
+			4.93
+		],
+		[
+			9.70401,
+			-23.9156,
+			4.93
+		],
+		[
+			11.53789,
+			-29.261,
+			4.93
+		],
+		[
+			11.68157,
+			-62.0901,
+			4.93
+		],
+		[
+			12.27237,
+			23.9454,
+			4.93
+		],
+		[
+			12.86165,
+			27.5407,
+			4.93
+		],
+		[
+			13.01214,
+			56.3663,
+			4.93
+		],
+		[
+			14.18069,
+			-16.302,
+			4.93
+		],
+		[
+			14.8503,
+			-2.2992,
+			4.93
+		],
+		[
+			15.12169,
+			24.8692,
+			4.93
+		],
+		[
+			16.2,
+			-10.0643,
+			4.93
+		],
+		[
+			19.61485,
+			-7.0275,
+			4.93
+		],
+		[
+			20.1231,
+			-52.8808,
+			4.93
+		],
+		[
+			20.15711,
+			36.8396,
+			4.93
+		],
+		[
+			20.24223,
+			36.8063,
+			4.93
+		],
+		[
+			20.78632,
+			34.3741,
+			4.93
+		],
+		[
+			23.28081,
+			-7.7265,
+			4.93
+		],
+		[
+			23.73319,
+			29.3615,
+			4.93
+		],
+		[
+			2.20619,
+			30.3031,
+			4.94
+		],
+		[
+			2.98435,
+			35.1831,
+			4.94
+		],
+		[
+			6.93777,
+			-48.7211,
+			4.94
+		],
+		[
+			7.37043,
+			-19.0166,
+			4.94
+		],
+		[
+			8.05863,
+			27.7943,
+			4.94
+		],
+		[
+			8.8299,
+			-45.3079,
+			4.94
+		],
+		[
+			9.9145,
+			-19.0094,
+			4.94
+		],
+		[
+			10.40218,
+			65.5664,
+			4.94
+		],
+		[
+			10.51724,
+			-73.2215,
+			4.94
+		],
+		[
+			13.15091,
+			-23.1181,
+			4.94
+		],
+		[
+			13.22859,
+			40.1529,
+			4.94
+		],
+		[
+			16.46639,
+			68.7681,
+			4.94
+		],
+		[
+			19.00023,
+			32.1455,
+			4.94
+		],
+		[
+			20.23795,
+			15.1976,
+			4.94
+		],
+		[
+			20.50099,
+			48.9516,
+			4.94
+		],
+		[
+			22.16911,
+			-32.5484,
+			4.94
+		],
+		[
+			.72447,
+			47.0245,
+			4.95
+		],
+		[
+			1.3347,
+			58.2316,
+			4.95
+		],
+		[
+			3.95707,
+			63.0723,
+			4.95
+		],
+		[
+			5.68075,
+			-1.1288,
+			4.95
+		],
+		[
+			6.20091,
+			16.1304,
+			4.95
+		],
+		[
+			11.46562,
+			2.8563,
+			4.95
+		],
+		[
+			12.57889,
+			70.0218,
+			4.95
+		],
+		[
+			15.96983,
+			-14.2794,
+			4.95
+		],
+		[
+			16.22465,
+			-54.6305,
+			4.95
+		],
+		[
+			16.29175,
+			75.7553,
+			4.95
+		],
+		[
+			19.93105,
+			38.4867,
+			4.95
+		],
+		[
+			20.02909,
+			-59.3759,
+			4.95
+		],
+		[
+			22.86723,
+			43.3124,
+			4.95
+		],
+		[
+			23.44887,
+			1.2556,
+			4.95
+		],
+		[
+			23.7732,
+			3.4868,
+			4.95
+		],
+		[
+			1.67634,
+			40.577,
+			4.96
+		],
+		[
+			1.69643,
+			42.6134,
+			4.96
+		],
+		[
+			2.56409,
+			-28.2323,
+			4.96
+		],
+		[
+			3.35738,
+			43.3297,
+			4.96
+		],
+		[
+			4.47399,
+			16.3597,
+			4.96
+		],
+		[
+			5.32128,
+			22.0965,
+			4.96
+		],
+		[
+			5.91411,
+			55.7069,
+			4.96
+		],
+		[
+			13.83119,
+			-18.1342,
+			4.96
+		],
+		[
+			15.96318,
+			54.7498,
+			4.96
+		],
+		[
+			16.05573,
+			-25.8652,
+			4.96
+		],
+		[
+			18.10053,
+			22.2189,
+			4.96
+		],
+		[
+			18.19537,
+			-23.7012,
+			4.96
+		],
+		[
+			18.19838,
+			31.4053,
+			4.96
+		],
+		[
+			23.41396,
+			62.2828,
+			4.96
+		],
+		[
+			1.25309,
+			-45.5317,
+			4.97
+		],
+		[
+			1.93334,
+			68.6852,
+			4.97
+		],
+		[
+			3.70629,
+			33.965,
+			4.97
+		],
+		[
+			4.02171,
+			-61.0788,
+			4.97
+		],
+		[
+			4.33923,
+			27.3508,
+			4.97
+		],
+		[
+			5.92498,
+			-37.1207,
+			4.97
+		],
+		[
+			7.89161,
+			26.7658,
+			4.97
+		],
+		[
+			10.38282,
+			-66.9015,
+			4.97
+		],
+		[
+			12.33916,
+			3.3126,
+			4.97
+		],
+		[
+			13.47383,
+			13.7788,
+			4.97
+		],
+		[
+			14.46956,
+			-29.4916,
+			4.97
+		],
+		[
+			15.67136,
+			-23.8181,
+			4.97
+		],
+		[
+			16.28359,
+			-50.0681,
+			4.97
+		],
+		[
+			17.05219,
+			14.0919,
+			4.97
+		],
+		[
+			23.56589,
+			31.3253,
+			4.97
+		],
+		[
+			23.66307,
+			-14.2222,
+			4.97
+		],
+		[
+			23.76723,
+			46.4203,
+			4.97
+		],
+		[
+			1.71209,
+			-3.6902,
+			4.98
+		],
+		[
+			2.15704,
+			25.9399,
+			4.98
+		],
+		[
+			2.97995,
+			-64.0713,
+			4.98
+		],
+		[
+			5.11129,
+			51.5977,
+			4.98
+		],
+		[
+			5.58773,
+			-5.3873,
+			4.98
+		],
+		[
+			5.58969,
+			-5.4161,
+			4.98
+		],
+		[
+			7.67311,
+			-15.2639,
+			4.98
+		],
+		[
+			8.66707,
+			-12.4754,
+			4.98
+		],
+		[
+			11.01245,
+			6.1014,
+			4.98
+		],
+		[
+			11.83239,
+			-70.2258,
+			4.98
+		],
+		[
+			12.44981,
+			26.8257,
+			4.98
+		],
+		[
+			15.52972,
+			40.8993,
+			4.98
+		],
+		[
+			16.02405,
+			29.8511,
+			4.98
+		],
+		[
+			18.3985,
+			58.8007,
+			4.98
+		],
+		[
+			18.9374,
+			4.2021,
+			4.98
+		],
+		[
+			19.34247,
+			-5.4158,
+			4.98
+		],
+		[
+			19.93205,
+			58.846,
+			4.98
+		],
+		[
+			.07503,
+			-10.5095,
+			4.99
+		],
+		[
+			2.03837,
+			54.4875,
+			4.99
+		],
+		[
+			3.46752,
+			49.0629,
+			4.99
+		],
+		[
+			3.70414,
+			-31.9384,
+			4.99
+		],
+		[
+			3.9523,
+			61.1089,
+			4.99
+		],
+		[
+			4.64821,
+			-12.1231,
+			4.99
+		],
+		[
+			5.38055,
+			3.5445,
+			4.99
+		],
+		[
+			6.84609,
+			41.7812,
+			4.99
+		],
+		[
+			6.84787,
+			-34.3673,
+			4.99
+		],
+		[
+			7.04855,
+			-4.2392,
+			4.99
+		],
+		[
+			7.42747,
+			9.2761,
+			4.99
+		],
+		[
+			8.22221,
+			-15.7882,
+			4.99
+		],
+		[
+			9.09955,
+			5.0923,
+			4.99
+		],
+		[
+			9.18455,
+			-44.8679,
+			4.99
+		],
+		[
+			9.53243,
+			11.2998,
+			4.99
+		],
+		[
+			11.38044,
+			43.4827,
+			4.99
+		],
+		[
+			12.27504,
+			33.0615,
+			4.99
+		],
+		[
+			13.69577,
+			-54.5594,
+			4.99
+		],
+		[
+			14.20439,
+			2.4094,
+			4.99
+		],
+		[
+			15.36897,
+			-47.9278,
+			4.99
+		],
+		[
+			15.38675,
+			30.2878,
+			4.99
+		],
+		[
+			15.99174,
+			-41.7444,
+			4.99
+		],
+		[
+			18.23162,
+			64.3973,
+			4.99
+		],
+		[
+			19.40211,
+			29.6213,
+			4.99
+		],
+		[
+			20.07211,
+			-32.0563,
+			4.99
+		],
+		[
+			22.14054,
+			-34.0438,
+			4.99
+		],
+		[
+			22.94055,
+			49.7335,
+			4.99
+		],
+		[
+			23.31602,
+			-9.6107,
+			4.99
+		],
+		[
+			4.07421,
+			59.1555,
+			5
+		],
+		[
+			5.40707,
+			17.3835,
+			5
+		],
+		[
+			6.12545,
+			-37.2529,
+			5
+		],
+		[
+			6.26247,
+			-13.7184,
+			5
+		],
+		[
+			6.93518,
+			-14.0434,
+			5
+		],
+		[
+			7.30888,
+			49.4648,
+			5
+		],
+		[
+			9.62019,
+			6.8358,
+			5
+		],
+		[
+			11.38685,
+			-36.1648,
+			5
+		],
+		[
+			11.72533,
+			-62.4894,
+			5
+		],
+		[
+			15.52359,
+			77.3494,
+			5
+		],
+		[
+			16.13459,
+			17.047,
+			5
+		],
+		[
+			17.9848,
+			-30.253,
+			5
+		],
+		[
+			18.12465,
+			43.4619,
+			5
+		],
+		[
+			18.91865,
+			-22.6713,
+			5
+		],
+		[
+			19.02399,
+			46.9348,
+			5
+		],
+		[
+			19.23199,
+			57.7051,
+			5
+		],
+		[
+			19.57636,
+			19.7734,
+			5
+		],
+		[
+			19.77378,
+			33.7276,
+			5
+		],
+		[
+			23.95975,
+			-64.2982,
+			5
+		],
+		[
+			.17201,
+			46.0723,
+			5.01
+		],
+		[
+			.46747,
+			17.8931,
+			5.01
+		],
+		[
+			1.65583,
+			44.3862,
+			5.01
+		],
+		[
+			5.03606,
+			-26.275,
+			5.01
+		],
+		[
+			5.25677,
+			32.6876,
+			5.01
+		],
+		[
+			6.18749,
+			-65.5894,
+			5.01
+		],
+		[
+			6.29856,
+			61.5153,
+			5.01
+		],
+		[
+			7.49688,
+			27.9161,
+			5.01
+		],
+		[
+			7.87102,
+			-34.7054,
+			5.01
+		],
+		[
+			8.57878,
+			-49.9442,
+			5.01
+		],
+		[
+			9.56911,
+			-51.2553,
+			5.01
+		],
+		[
+			10.71779,
+			69.0762,
+			5.01
+		],
+		[
+			11.65822,
+			-65.3978,
+			5.01
+		],
+		[
+			12.3166,
+			-55.143,
+			5.01
+		],
+		[
+			12.43081,
+			39.0186,
+			5.01
+		],
+		[
+			12.50185,
+			69.2011,
+			5.01
+		],
+		[
+			17.33857,
+			18.0571,
+			5.01
+		],
+		[
+			19.81629,
+			19.142,
+			5.01
+		],
+		[
+			19.96584,
+			-15.4915,
+			5.01
+		],
+		[
+			4.4806,
+			13.0476,
+			5.02
+		],
+		[
+			5.41087,
+			37.3853,
+			5.02
+		],
+		[
+			9.55346,
+			-21.1157,
+			5.02
+		],
+		[
+			10.54913,
+			-47.0034,
+			5.02
+		],
+		[
+			10.92899,
+			33.5069,
+			5.02
+		],
+		[
+			13.94283,
+			27.4921,
+			5.02
+		],
+		[
+			14.88085,
+			-37.8032,
+			5.02
+		],
+		[
+			15.28497,
+			71.8239,
+			5.02
+		],
+		[
+			17.81786,
+			50.7811,
+			5.02
+		],
+		[
+			17.82417,
+			76.9629,
+			5.02
+		],
+		[
+			18.35907,
+			49.1216,
+			5.02
+		],
+		[
+			18.74721,
+			2.06,
+			5.02
+		],
+		[
+			18.95569,
+			-20.6563,
+			5.02
+		],
+		[
+			19.42125,
+			-24.5086,
+			5.02
+		],
+		[
+			21.7956,
+			-30.8983,
+			5.02
+		],
+		[
+			2.10943,
+			22.6483,
+			5.03
+		],
+		[
+			4.83656,
+			-16.2172,
+			5.03
+		],
+		[
+			6.05433,
+			-26.2845,
+			5.03
+		],
+		[
+			7.28039,
+			-36.5926,
+			5.03
+		],
+		[
+			7.7658,
+			-14.5638,
+			5.03
+		],
+		[
+			8.49097,
+			-44.7248,
+			5.03
+		],
+		[
+			10.99111,
+			40.4303,
+			5.03
+		],
+		[
+			12.58549,
+			18.3771,
+			5.03
+		],
+		[
+			13.69355,
+			-8.703,
+			5.03
+		],
+		[
+			14.24921,
+			-57.0861,
+			5.03
+		],
+		[
+			16.86257,
+			24.6564,
+			5.03
+		],
+		[
+			17.03129,
+			-32.1435,
+			5.03
+		],
+		[
+			17.31027,
+			10.8645,
+			5.03
+		],
+		[
+			18.71054,
+			55.5395,
+			5.03
+		],
+		[
+			19.38089,
+			-54.4239,
+			5.03
+		],
+		[
+			19.51107,
+			-2.7889,
+			5.03
+		],
+		[
+			19.84381,
+			52.988,
+			5.03
+		],
+		[
+			20.90935,
+			28.0576,
+			5.03
+		],
+		[
+			.03887,
+			-29.7204,
+			5.04
+		],
+		[
+			1.13357,
+			43.9421,
+			5.04
+		],
+		[
+			1.76841,
+			-53.522,
+			5.04
+		],
+		[
+			3.27005,
+			50.9377,
+			5.04
+		],
+		[
+			4.70097,
+			-37.1443,
+			5.04
+		],
+		[
+			5.98453,
+			-9.5583,
+			5.04
+		],
+		[
+			6.11761,
+			-62.1546,
+			5.04
+		],
+		[
+			6.27406,
+			12.2722,
+			5.04
+		],
+		[
+			6.71805,
+			44.5244,
+			5.04
+		],
+		[
+			7.39125,
+			25.0505,
+			5.04
+		],
+		[
+			7.65794,
+			17.6745,
+			5.04
+		],
+		[
+			7.71586,
+			-45.1731,
+			5.04
+		],
+		[
+			8.11121,
+			-45.266,
+			5.04
+		],
+		[
+			12.07957,
+			-76.5191,
+			5.04
+		],
+		[
+			13.20099,
+			-16.1986,
+			5.04
+		],
+		[
+			13.41865,
+			-74.8878,
+			5.04
+		],
+		[
+			13.49035,
+			-51.1651,
+			5.04
+		],
+		[
+			15.28247,
+			-60.9573,
+			5.04
+		],
+		[
+			15.32189,
+			1.7654,
+			5.04
+		],
+		[
+			15.51549,
+			40.833,
+			5.04
+		],
+		[
+			15.88891,
+			-20.167,
+			5.04
+		],
+		[
+			21.30755,
+			43.9459,
+			5.04
+		],
+		[
+			21.61583,
+			40.4135,
+			5.04
+		],
+		[
+			21.98749,
+			73.1799,
+			5.04
+		],
+		[
+			22.62927,
+			-4.2281,
+			5.04
+		],
+		[
+			3.31879,
+			50.095,
+			5.05
+		],
+		[
+			3.81978,
+			24.1367,
+			5.05
+		],
+		[
+			5.08278,
+			-49.5778,
+			5.05
+		],
+		[
+			5.33359,
+			33.9581,
+			5.05
+		],
+		[
+			6.64379,
+			-48.2202,
+			5.05
+		],
+		[
+			7.67513,
+			87.0201,
+			5.05
+		],
+		[
+			8.65219,
+			-22.6619,
+			5.05
+		],
+		[
+			18.11709,
+			30.5621,
+			5.05
+		],
+		[
+			22.19183,
+			59.4145,
+			5.05
+		],
+		[
+			23.15874,
+			8.6772,
+			5.05
+		],
+		[
+			23.33905,
+			5.3813,
+			5.05
+		],
+		[
+			23.79855,
+			67.8068,
+			5.05
+		],
+		[
+			3.70259,
+			63.2168,
+			5.06
+		],
+		[
+			5.25677,
+			-26.9435,
+			5.06
+		],
+		[
+			5.36285,
+			-24.773,
+			5.06
+		],
+		[
+			6.14563,
+			-68.8434,
+			5.06
+		],
+		[
+			6.19773,
+			-6.5503,
+			5.06
+		],
+		[
+			6.46599,
+			-4.7622,
+			5.06
+		],
+		[
+			7.57184,
+			-23.4737,
+			5.06
+		],
+		[
+			8.30523,
+			-65.6132,
+			5.06
+		],
+		[
+			10.10311,
+			-47.37,
+			5.06
+		],
+		[
+			11.01401,
+			39.2121,
+			5.06
+		],
+		[
+			14.3731,
+			-80.1089,
+			5.06
+		],
+		[
+			17.17842,
+			-44.5577,
+			5.06
+		],
+		[
+			19.68061,
+			45.5249,
+			5.06
+		],
+		[
+			19.70865,
+			-16.124,
+			5.06
+		],
+		[
+			20.02265,
+			50.1047,
+			5.06
+		],
+		[
+			20.6422,
+			24.116,
+			5.06
+		],
+		[
+			20.8347,
+			44.0593,
+			5.06
+		],
+		[
+			20.85835,
+			-51.6082,
+			5.06
+		],
+		[
+			21.22237,
+			-70.1263,
+			5.06
+		],
+		[
+			23.8748,
+			19.1203,
+			5.06
+		],
+		[
+			.54553,
+			-63.0315,
+			5.07
+		],
+		[
+			.81631,
+			16.9406,
+			5.07
+		],
+		[
+			3.2129,
+			-1.1961,
+			5.07
+		],
+		[
+			4.51391,
+			-44.9537,
+			5.07
+		],
+		[
+			4.66519,
+			53.0795,
+			5.07
+		],
+		[
+			5.40803,
+			-.8913,
+			5.07
+		],
+		[
+			6.97364,
+			-34.1117,
+			5.07
+		],
+		[
+			7.22285,
+			16.159,
+			5.07
+		],
+		[
+			7.48901,
+			28.1183,
+			5.07
+		],
+		[
+			7.79027,
+			-38.5111,
+			5.07
+		],
+		[
+			9.53266,
+			9.7158,
+			5.07
+		],
+		[
+			9.56483,
+			-80.9413,
+			5.07
+		],
+		[
+			9.67177,
+			-14.3323,
+			5.07
+		],
+		[
+			9.87512,
+			-8.105,
+			5.07
+		],
+		[
+			10.58001,
+			6.9537,
+			5.07
+		],
+		[
+			11.52947,
+			-59.4421,
+			5.07
+		],
+		[
+			14.21279,
+			-27.2612,
+			5.07
+		],
+		[
+			16.60381,
+			52.9244,
+			5.07
+		],
+		[
+			17.15923,
+			40.777,
+			5.07
+		],
+		[
+			17.53274,
+			68.135,
+			5.07
+		],
+		[
+			18.53387,
+			-45.7574,
+			5.07
+		],
+		[
+			19.11628,
+			11.0712,
+			5.07
+		],
+		[
+			20.65216,
+			10.0862,
+			5.07
+		],
+		[
+			21.83075,
+			30.1742,
+			5.07
+		],
+		[
+			22.08577,
+			62.2798,
+			5.07
+		],
+		[
+			.60231,
+			54.1685,
+			5.08
+		],
+		[
+			3.80452,
+			11.1433,
+			5.08
+		],
+		[
+			4.65256,
+			15.7998,
+			5.08
+		],
+		[
+			4.85624,
+			18.8399,
+			5.08
+		],
+		[
+			5.37598,
+			79.2311,
+			5.08
+		],
+		[
+			5.4608,
+			34.4759,
+			5.08
+		],
+		[
+			6.17069,
+			-74.753,
+			5.08
+		],
+		[
+			6.79367,
+			-8.9985,
+			5.08
+		],
+		[
+			7.95512,
+			-44.1099,
+			5.08
+		],
+		[
+			8.46016,
+			-53.0885,
+			5.08
+		],
+		[
+			9.80983,
+			46.021,
+			5.08
+		],
+		[
+			10.50485,
+			-.637,
+			5.08
+		],
+		[
+			10.56691,
+			-23.7452,
+			5.08
+		],
+		[
+			10.6057,
+			-59.5644,
+			5.08
+		],
+		[
+			10.7236,
+			23.1884,
+			5.08
+		],
+		[
+			11.38941,
+			-18.78,
+			5.08
+		],
+		[
+			12.91025,
+			-57.1687,
+			5.08
+		],
+		[
+			14.94555,
+			-62.781,
+			5.08
+		],
+		[
+			18.91197,
+			-15.603,
+			5.08
+		],
+		[
+			20.11483,
+			23.6144,
+			5.08
+		],
+		[
+			20.45533,
+			-18.2117,
+			5.08
+		],
+		[
+			21.88827,
+			-13.5518,
+			5.08
+		],
+		[
+			22.59615,
+			73.6432,
+			5.08
+		],
+		[
+			.80984,
+			-74.9234,
+			5.09
+		],
+		[
+			1.95585,
+			17.8175,
+			5.09
+		],
+		[
+			3.50005,
+			55.4518,
+			5.09
+		],
+		[
+			5.00575,
+			81.1941,
+			5.09
+		],
+		[
+			6.56053,
+			-1.2202,
+			5.09
+		],
+		[
+			7.36579,
+			20.4437,
+			5.09
+		],
+		[
+			7.4394,
+			-51.0185,
+			5.09
+		],
+		[
+			7.98492,
+			-23.3104,
+			5.09
+		],
+		[
+			8.23287,
+			-36.3223,
+			5.09
+		],
+		[
+			8.84263,
+			-46.5292,
+			5.09
+		],
+		[
+			9.43832,
+			-53.3789,
+			5.09
+		],
+		[
+			9.77546,
+			57.1281,
+			5.09
+		],
+		[
+			9.83254,
+			-45.7327,
+			5.09
+		],
+		[
+			11.38928,
+			-64.9547,
+			5.09
+		],
+		[
+			12.26672,
+			14.8991,
+			5.09
+		],
+		[
+			15.85433,
+			-3.0905,
+			5.09
+		],
+		[
+			16.18391,
+			-29.4162,
+			5.09
+		],
+		[
+			17.81365,
+			25.6229,
+			5.09
+		],
+		[
+			18.37183,
+			-38.6569,
+			5.09
+		],
+		[
+			20.08597,
+			19.9911,
+			5.09
+		],
+		[
+			21.66975,
+			43.2738,
+			5.09
+		],
+		[
+			21.88438,
+			25.9251,
+			5.09
+		],
+		[
+			22.10054,
+			45.0143,
+			5.09
+		],
+		[
+			22.3338,
+			-80.4397,
+			5.09
+		],
+		[
+			23.04344,
+			42.7578,
+			5.09
+		],
+		[
+			23.3846,
+			12.3139,
+			5.09
+		],
+		[
+			23.72288,
+			10.3315,
+			5.09
+		],
+		[
+			2.9548,
+			31.9342,
+			5.1
+		],
+		[
+			3.37923,
+			20.7421,
+			5.1
+		],
+		[
+			4.16743,
+			80.6987,
+			5.1
+		],
+		[
+			4.39773,
+			9.461,
+			5.1
+		],
+		[
+			5.83153,
+			-66.9012,
+			5.1
+		],
+		[
+			11.81252,
+			-26.7498,
+			5.1
+		],
+		[
+			13.28143,
+			-31.5062,
+			5.1
+		],
+		[
+			14.40315,
+			5.8201,
+			5.1
+		],
+		[
+			16.02065,
+			17.8184,
+			5.1
+		],
+		[
+			16.77777,
+			-67.1097,
+			5.1
+		],
+		[
+			17.40363,
+			-44.1626,
+			5.1
+		],
+		[
+			18.14802,
+			20.0452,
+			5.1
+		],
+		[
+			19.30903,
+			1.0851,
+			5.1
+		],
+		[
+			21.65924,
+			2.2436,
+			5.1
+		],
+		[
+			21.75007,
+			-9.0824,
+			5.1
+		],
+		[
+			23.00142,
+			56.9454,
+			5.1
+		],
+		[
+			23.86847,
+			-82.0188,
+			5.1
+		],
+		[
+			1.49337,
+			-21.6293,
+			5.11
+		],
+		[
+			3.89415,
+			-34.7323,
+			5.11
+		],
+		[
+			5.14547,
+			-4.4562,
+			5.11
+		],
+		[
+			6.89507,
+			68.8883,
+			5.11
+		],
+		[
+			7.31061,
+			-36.7427,
+			5.11
+		],
+		[
+			9.96141,
+			41.0556,
+			5.11
+		],
+		[
+			11.14278,
+			-61.9472,
+			5.11
+		],
+		[
+			13.43549,
+			-39.7551,
+			5.11
+		],
+		[
+			15.92489,
+			-68.603,
+			5.11
+		],
+		[
+			18.40383,
+			39.5072,
+			5.11
+		],
+		[
+			18.72971,
+			-38.3234,
+			5.11
+		],
+		[
+			19.15275,
+			76.5605,
+			5.11
+		],
+		[
+			20.6674,
+			-60.5489,
+			5.11
+		],
+		[
+			20.80809,
+			-43.9885,
+			5.11
+		],
+		[
+			21.94421,
+			63.6256,
+			5.11
+		],
+		[
+			22.27405,
+			-41.6272,
+			5.11
+		],
+		[
+			22.64387,
+			56.7956,
+			5.11
+		],
+		[
+			22.73485,
+			41.8192,
+			5.11
+		],
+		[
+			1.90612,
+			-42.4969,
+			5.12
+		],
+		[
+			3.06023,
+			-59.7378,
+			5.12
+		],
+		[
+			5.11268,
+			-4.6552,
+			5.12
+		],
+		[
+			7.17985,
+			-48.9321,
+			5.12
+		],
+		[
+			7.36739,
+			36.7606,
+			5.12
+		],
+		[
+			7.72831,
+			-40.9337,
+			5.12
+		],
+		[
+			7.86167,
+			1.7669,
+			5.12
+		],
+		[
+			9.27307,
+			-44.2657,
+			5.12
+		],
+		[
+			9.56237,
+			-49.0051,
+			5.12
+		],
+		[
+			10.69904,
+			65.7163,
+			5.12
+		],
+		[
+			10.8929,
+			54.5851,
+			5.12
+		],
+		[
+			11.53022,
+			-59.5156,
+			5.12
+		],
+		[
+			12.59598,
+			-41.0219,
+			5.12
+		],
+		[
+			12.77743,
+			16.5777,
+			5.12
+		],
+		[
+			17.73575,
+			-51.8341,
+			5.12
+		],
+		[
+			18.35029,
+			28.87,
+			5.12
+		],
+		[
+			18.52397,
+			-18.4027,
+			5.12
+		],
+		[
+			18.584,
+			-10.9772,
+			5.12
+		],
+		[
+			19.51261,
+			27.9653,
+			5.12
+		],
+		[
+			19.58535,
+			-10.5604,
+			5.12
+		],
+		[
+			19.85045,
+			10.4157,
+			5.12
+		],
+		[
+			20.5653,
+			-44.516,
+			5.12
+		],
+		[
+			22.35988,
+			-21.5982,
+			5.12
+		],
+		[
+			23.05828,
+			-34.7494,
+			5.12
+		],
+		[
+			.0304,
+			-3.0275,
+			5.13
+		],
+		[
+			.24101,
+			-7.7805,
+			5.13
+		],
+		[
+			1.29665,
+			3.6145,
+			5.13
+		],
+		[
+			2.46714,
+			-33.811,
+			5.13
+		],
+		[
+			3.41127,
+			64.586,
+			5.13
+		],
+		[
+			5.58791,
+			-5.3897,
+			5.13
+		],
+		[
+			8.33441,
+			27.2177,
+			5.13
+		],
+		[
+			8.43188,
+			7.5645,
+			5.13
+		],
+		[
+			11.54837,
+			-31.0872,
+			5.13
+		],
+		[
+			14.13215,
+			43.8545,
+			5.13
+		],
+		[
+			15.08866,
+			-41.0672,
+			5.13
+		],
+		[
+			15.57703,
+			-28.047,
+			5.13
+		],
+		[
+			16.25425,
+			-47.372,
+			5.13
+		],
+		[
+			17.34839,
+			24.4994,
+			5.13
+		],
+		[
+			19.19461,
+			56.8592,
+			5.13
+		],
+		[
+			21.07863,
+			-77.0238,
+			5.13
+		],
+		[
+			23.98216,
+			-52.7458,
+			5.13
+		],
+		[
+			.6129,
+			44.4886,
+			5.14
+		],
+		[
+			1.24001,
+			-7.9228,
+			5.14
+		],
+		[
+			3.5068,
+			11.3364,
+			5.14
+		],
+		[
+			3.82575,
+			33.0914,
+			5.14
+		],
+		[
+			5.43869,
+			-58.9125,
+			5.14
+		],
+		[
+			6.0576,
+			19.6906,
+			5.14
+		],
+		[
+			6.83184,
+			-46.6146,
+			5.14
+		],
+		[
+			6.84919,
+			67.5719,
+			5.14
+		],
+		[
+			7.0143,
+			-51.4026,
+			5.14
+		],
+		[
+			7.06057,
+			10.9518,
+			5.14
+		],
+		[
+			7.07176,
+			-56.7497,
+			5.14
+		],
+		[
+			7.6213,
+			-4.111,
+			5.14
+		],
+		[
+			7.79175,
+			33.4157,
+			5.14
+		],
+		[
+			7.96437,
+			-45.5777,
+			5.14
+		],
+		[
+			8.08458,
+			13.1182,
+			5.14
+		],
+		[
+			8.22671,
+			-46.9916,
+			5.14
+		],
+		[
+			10.78263,
+			-56.7572,
+			5.14
+		],
+		[
+			11.47641,
+			-42.6742,
+			5.14
+		],
+		[
+			11.61681,
+			-61.2834,
+			5.14
+		],
+		[
+			12.20332,
+			77.6162,
+			5.14
+		],
+		[
+			12.34881,
+			-13.5657,
+			5.14
+		],
+		[
+			13.30403,
+			49.6821,
+			5.14
+		],
+		[
+			14.32569,
+			-2.2655,
+			5.14
+		],
+		[
+			15.58748,
+			39.0101,
+			5.14
+		],
+		[
+			15.94819,
+			-33.9661,
+			5.14
+		],
+		[
+			17.30019,
+			-24.2869,
+			5.14
+		],
+		[
+			18.97679,
+			-60.2005,
+			5.14
+		],
+		[
+			19.22853,
+			2.2937,
+			5.14
+		],
+		[
+			19.42461,
+			19.7984,
+			5.14
+		],
+		[
+			19.88816,
+			57.5235,
+			5.14
+		],
+		[
+			20.31085,
+			34.9828,
+			5.14
+		],
+		[
+			20.69919,
+			-66.7607,
+			5.14
+		],
+		[
+			1.18521,
+			31.4247,
+			5.15
+		],
+		[
+			2.02844,
+			-44.7135,
+			5.15
+		],
+		[
+			2.53505,
+			36.1473,
+			5.15
+		],
+		[
+			6.29492,
+			-16.8159,
+			5.15
+		],
+		[
+			7.77758,
+			37.5174,
+			5.15
+		],
+		[
+			8.72785,
+			-49.8228,
+			5.15
+		],
+		[
+			8.86579,
+			43.7266,
+			5.15
+		],
+		[
+			9.13986,
+			66.8732,
+			5.15
+		],
+		[
+			9.71589,
+			72.2526,
+			5.15
+		],
+		[
+			10.22517,
+			-66.3728,
+			5.15
+		],
+		[
+			11.1213,
+			-42.6387,
+			5.15
+		],
+		[
+			11.63536,
+			-61.8266,
+			5.15
+		],
+		[
+			12.06099,
+			-42.4341,
+			5.15
+		],
+		[
+			12.36871,
+			-67.5221,
+			5.15
+		],
+		[
+			13.13161,
+			-10.7404,
+			5.15
+		],
+		[
+			13.78232,
+			-36.2519,
+			5.15
+		],
+		[
+			14.76669,
+			-25.4432,
+			5.15
+		],
+		[
+			14.84477,
+			-15.9972,
+			5.15
+		],
+		[
+			15.24398,
+			67.3467,
+			5.15
+		],
+		[
+			15.26779,
+			-41.4912,
+			5.15
+		],
+		[
+			15.47729,
+			1.8421,
+			5.15
+		],
+		[
+			16.76386,
+			8.5826,
+			5.15
+		],
+		[
+			19.99867,
+			37.0429,
+			5.15
+		],
+		[
+			20.65691,
+			.4864,
+			5.15
+		],
+		[
+			20.66749,
+			-18.1387,
+			5.15
+		],
+		[
+			20.77746,
+			16.1241,
+			5.15
+		],
+		[
+			23.19561,
+			8.7201,
+			5.15
+		],
+		[
+			.35202,
+			37.9686,
+			5.16
+		],
+		[
+			2.37262,
+			55.8457,
+			5.16
+		],
+		[
+			2.94373,
+			-3.7123,
+			5.16
+		],
+		[
+			3.31049,
+			50.2222,
+			5.16
+		],
+		[
+			5.84812,
+			-52.1089,
+			5.16
+		],
+		[
+			6.52307,
+			-12.392,
+			5.16
+		],
+		[
+			7.86286,
+			-13.898,
+			5.16
+		],
+		[
+			8.25442,
+			-62.9156,
+			5.16
+		],
+		[
+			9.15598,
+			22.0454,
+			5.16
+		],
+		[
+			10.58603,
+			57.0826,
+			5.16
+		],
+		[
+			13.91171,
+			-1.5031,
+			5.16
+		],
+		[
+			15.08005,
+			-64.0314,
+			5.16
+		],
+		[
+			15.42983,
+			15.428,
+			5.16
+		],
+		[
+			15.57403,
+			-9.1834,
+			5.16
+		],
+		[
+			18.53926,
+			-39.704,
+			5.16
+		],
+		[
+			21.38156,
+			6.8111,
+			5.16
+		],
+		[
+			21.69246,
+			-14.0476,
+			5.16
+		],
+		[
+			22.87335,
+			9.8357,
+			5.16
+		],
+		[
+			.50629,
+			-23.7877,
+			5.17
+		],
+		[
+			.83544,
+			-10.6443,
+			5.17
+		],
+		[
+			1.13789,
+			54.9203,
+			5.17
+		],
+		[
+			2.6339,
+			72.8183,
+			5.17
+		],
+		[
+			2.74933,
+			12.4458,
+			5.17
+		],
+		[
+			4.39468,
+			-3.7455,
+			5.17
+		],
+		[
+			7.82811,
+			-17.2284,
+			5.17
+		],
+		[
+			8.98121,
+			-47.2347,
+			5.17
+		],
+		[
+			8.99005,
+			-59.0837,
+			5.17
+		],
+		[
+			11.9336,
+			-17.1508,
+			5.17
+		],
+		[
+			12.13052,
+			-75.367,
+			5.17
+		],
+		[
+			12.40515,
+			26.0986,
+			5.17
+		],
+		[
+			12.68777,
+			-13.0139,
+			5.17
+		],
+		[
+			12.95121,
+			-51.1988,
+			5.17
+		],
+		[
+			17.88834,
+			40.008,
+			5.17
+		],
+		[
+			19.10554,
+			-52.3409,
+			5.17
+		],
+		[
+			19.41617,
+			11.9444,
+			5.17
+		],
+		[
+			19.43587,
+			36.3179,
+			5.17
+		],
+		[
+			19.61055,
+			44.6949,
+			5.17
+		],
+		[
+			21.08729,
+			-54.727,
+			5.17
+		],
+		[
+			21.26053,
+			-20.6517,
+			5.17
+		],
+		[
+			23.85593,
+			-18.9092,
+			5.17
+		],
+		[
+			.35867,
+			-28.9815,
+			5.18
+		],
+		[
+			.47046,
+			44.3945,
+			5.18
+		],
+		[
+			1.71552,
+			70.6225,
+			5.18
+		],
+		[
+			4.11011,
+			27.5999,
+			5.18
+		],
+		[
+			4.91303,
+			11.426,
+			5.18
+		],
+		[
+			5.19488,
+			16.0457,
+			5.18
+		],
+		[
+			5.53139,
+			-76.341,
+			5.18
+		],
+		[
+			5.66228,
+			25.8971,
+			5.18
+		],
+		[
+			5.76664,
+			-32.3064,
+			5.18
+		],
+		[
+			6.99737,
+			-67.9164,
+			5.18
+		],
+		[
+			7.41116,
+			-16.2015,
+			5.18
+		],
+		[
+			8.35585,
+			-36.4842,
+			5.18
+		],
+		[
+			8.42537,
+			-51.7274,
+			5.18
+		],
+		[
+			8.666,
+			-53.0547,
+			5.18
+		],
+		[
+			9.23904,
+			61.4233,
+			5.18
+		],
+		[
+			10.7258,
+			46.2039,
+			5.18
+		],
+		[
+			11.28817,
+			2.0106,
+			5.18
+		],
+		[
+			11.42865,
+			-63.9725,
+			5.18
+		],
+		[
+			14.20111,
+			69.4325,
+			5.18
+		],
+		[
+			14.92627,
+			-60.1142,
+			5.18
+		],
+		[
+			18.87768,
+			-52.1074,
+			5.18
+		],
+		[
+			19.65323,
+			5.3978,
+			5.18
+		],
+		[
+			19.84277,
+			38.7224,
+			5.18
+		],
+		[
+			20.2584,
+			23.5089,
+			5.18
+		],
+		[
+			20.52511,
+			74.9546,
+			5.18
+		],
+		[
+			21.71779,
+			72.3201,
+			5.18
+		],
+		[
+			23.78777,
+			-50.2265,
+			5.18
+		],
+		[
+			2.37571,
+			-23.8163,
+			5.19
+		],
+		[
+			2.40692,
+			50.0065,
+			5.19
+		],
+		[
+			5.12612,
+			-63.3997,
+			5.19
+		],
+		[
+			6.07042,
+			-6.7089,
+			5.19
+		],
+		[
+			6.45382,
+			.2992,
+			5.19
+		],
+		[
+			7.99376,
+			-60.5871,
+			5.19
+		],
+		[
+			8.65143,
+			-70.3867,
+			5.19
+		],
+		[
+			8.83097,
+			-32.7805,
+			5.19
+		],
+		[
+			10.49131,
+			-2.7391,
+			5.19
+		],
+		[
+			11.60078,
+			69.323,
+			5.19
+		],
+		[
+			13.27959,
+			9.4242,
+			5.19
+		],
+		[
+			15.11045,
+			-16.2568,
+			5.19
+		],
+		[
+			15.77778,
+			62.5996,
+			5.19
+		],
+		[
+			16.51371,
+			-61.6335,
+			5.19
+		],
+		[
+			17.43335,
+			-50.6335,
+			5.19
+		],
+		[
+			20.23737,
+			28.6948,
+			5.19
+		],
+		[
+			20.92686,
+			13.7215,
+			5.19
+		],
+		[
+			21.32284,
+			64.8719,
+			5.19
+		],
+		[
+			22.64418,
+			63.5845,
+			5.19
+		],
+		[
+			23.31843,
+			-13.4547,
+			5.19
+		],
+		[
+			23.37755,
+			-15.0393,
+			5.19
+		],
+		[
+			.50205,
+			29.7516,
+			5.2
+		],
+		[
+			.58747,
+			-3.5928,
+			5.2
+		],
+		[
+			4.27863,
+			53.6118,
+			5.2
+		],
+		[
+			4.5699,
+			-8.2314,
+			5.2
+		],
+		[
+			5.91606,
+			59.8884,
+			5.2
+		],
+		[
+			6.24747,
+			19.1564,
+			5.2
+		],
+		[
+			6.49125,
+			-56.8528,
+			5.2
+		],
+		[
+			6.70676,
+			17.6453,
+			5.2
+		],
+		[
+			7.04022,
+			24.2154,
+			5.2
+		],
+		[
+			7.06744,
+			-42.3373,
+			5.2
+		],
+		[
+			7.26525,
+			59.6375,
+			5.2
+		],
+		[
+			7.46232,
+			21.4452,
+			5.2
+		],
+		[
+			8.15997,
+			-44.1228,
+			5.2
+		],
+		[
+			8.67199,
+			-40.2639,
+			5.2
+		],
+		[
+			8.69914,
+			-45.4107,
+			5.2
+		],
+		[
+			11.69554,
+			-32.4994,
+			5.2
+		],
+		[
+			12.34268,
+			-22.2159,
+			5.2
+		],
+		[
+			13.09567,
+			35.7989,
+			5.2
+		],
+		[
+			13.97532,
+			-24.9722,
+			5.2
+		],
+		[
+			16.37262,
+			33.7991,
+			5.2
+		],
+		[
+			18.45347,
+			.1961,
+			5.2
+		],
+		[
+			18.79573,
+			-40.4062,
+			5.2
+		],
+		[
+			18.95045,
+			32.9013,
+			5.2
+		],
+		[
+			19.12377,
+			32.5017,
+			5.2
+		],
+		[
+			21.10685,
+			-32.3416,
+			5.2
+		],
+		[
+			21.11499,
+			38.7494,
+			5.2
+		],
+		[
+			23.31852,
+			-13.4586,
+			5.2
+		]
+	],
+	lines: [
+		[
+			[2.06499, 42.3297],
+			[1.1622, 35.6206],
+			[.65547, 30.861],
+			[.13979, 29.0904]
+		],
+		[
+			[.95345, 23.4176],
+			[.78898, 24.2672],
+			[.64259, 29.3118],
+			[.65547, 30.861],
+			[.61468, 33.7193],
+			[23.63561, 43.2681],
+			[23.03202, 42.326]
+		],
+		[
+			[23.63561, 43.2681],
+			[23.67347, 44.3339],
+			[23.62607, 46.4582]
+		],
+		[
+			[1.1622, 35.6206],
+			[.94589, 38.4993],
+			[.83023, 41.0789],
+			[1.15837, 47.2418],
+			[1.63321, 48.6282]
+		],
+		[[23.67347, 44.3339], [23.76723, 46.4203]],
+		[
+			[9.48742, -35.9513],
+			[10.45253, -31.0678],
+			[10.94529, -37.1378]
+		],
+		[
+			[14.7977, -79.0448],
+			[16.33911, -78.6957],
+			[16.71796, -77.5174],
+			[16.55752, -78.8971]
+		],
+		[
+			[20.7946, -9.4958],
+			[20.87757, -8.9833],
+			[21.52598, -5.5712],
+			[22.0964, -.3199],
+			[22.36094, -1.3873],
+			[22.48053, -.02],
+			[22.58927, -.1175],
+			[22.87691, -7.5796],
+			[23.29839, -9.1825],
+			[23.15745, -21.1724]
+		],
+		[[21.52598, -5.5712], [22.10729, -13.8697]],
+		[[22.0964, -.3199], [22.28057, -7.7833]],
+		[[22.48053, -.02], [22.42129, 1.3774]],
+		[
+			[23.38284, -20.1006],
+			[23.29839, -9.1825],
+			[23.69606, -17.8165]
+		],
+		[
+			[19.77099, 10.6133],
+			[19.84639, 8.8683],
+			[19.92189, 6.4068],
+			[20.18841, -.8215],
+			[19.87455, 1.0057],
+			[19.42497, 3.1148],
+			[19.09017, 13.8635],
+			[19.84639, 8.8683],
+			[19.42497, 3.1148],
+			[19.10415, -4.8826]
+		],
+		[
+			[17.42324, -56.3777],
+			[17.51831, -60.6838],
+			[16.82977, -59.0414],
+			[16.977, -55.9901],
+			[16.99307, -53.1604],
+			[17.53069, -49.8761],
+			[17.42167, -55.5299]
+		],
+		[
+			[2.83307, 27.2605],
+			[2.11956, 23.4624],
+			[1.91067, 20.808],
+			[1.89217, 19.2939]
+		],
+		[
+			[5.99215, 44.9474],
+			[5.27815, 45.998],
+			[5.10858, 41.2345],
+			[4.94989, 33.1661],
+			[5.4382, 28.6075],
+			[5.99535, 37.2126],
+			[5.99215, 44.9474],
+			[5.99212, 54.2847],
+			[5.27815, 45.998],
+			[5.03281, 43.8233],
+			[5.0413, 41.0758]
+		],
+		[
+			[13.78771, 17.4569],
+			[13.91141, 18.3977],
+			[14.26102, 19.1824],
+			[14.5305, 30.3714],
+			[14.53463, 38.3083],
+			[15.03243, 40.3906],
+			[15.25838, 33.3148],
+			[14.74978, 27.0742],
+			[14.26102, 19.1824],
+			[14.68582, 13.7283]
+		],
+		[
+			[14.53463, 38.3083],
+			[14.27306, 46.0883],
+			[14.22439, 51.7879],
+			[14.41995, 51.8507],
+			[14.27306, 46.0883]
+		],
+		[
+			[4.51391, -44.9537],
+			[4.67603, -41.8638],
+			[4.70097, -37.1443],
+			[5.07345, -35.483]
+		],
+		[
+			[4.95478, 53.7521],
+			[5.05697, 60.4422],
+			[4.90083, 66.3427],
+			[3.83931, 71.3323],
+			[3.82535, 65.526],
+			[3.48448, 59.9403]
+		],
+		[
+			[4.90083, 66.3427],
+			[6.31411, 69.3198],
+			[7.00112, 76.9774]
+		],
+		[
+			[8.97479, 11.8577],
+			[8.74475, 18.1543],
+			[8.72143, 21.4685],
+			[8.77777, 28.7651]
+		],
+		[[8.74475, 18.1543], [8.27525, 9.1855]],
+		[[12.93346, 38.3149], [12.56237, 41.3575]],
+		[
+			[6.37833, -17.9559],
+			[6.75248, -16.7161],
+			[7.05041, -23.8333],
+			[7.13986, -26.3932],
+			[7.02865, -27.9348],
+			[6.9771, -28.9721],
+			[6.33855, -30.0634]
+		],
+		[[7.40159, -29.3031], [7.13986, -26.3932]],
+		[
+			[6.75248, -16.7161],
+			[6.93562, -17.0542],
+			[7.06264, -15.6333],
+			[6.90317, -12.0386],
+			[6.93562, -17.0542]
+		],
+		[[7.65503, 5.225], [7.45251, 8.2893]],
+		[
+			[20.29413, -12.5082],
+			[20.35019, -14.7814],
+			[20.48101, -17.8137],
+			[20.76826, -25.2709],
+			[20.86369, -26.9191],
+			[21.44445, -22.4113],
+			[21.78401, -16.1273],
+			[21.66818, -16.6623],
+			[21.37078, -16.8345],
+			[21.09912, -17.2329],
+			[20.29413, -12.5082]
+		],
+		[
+			[6.62935, -43.1959],
+			[6.3992, -52.6957],
+			[9.21999, -69.7172],
+			[10.22895, -70.0379],
+			[10.71595, -64.3945],
+			[10.53374, -61.6853],
+			[10.28471, -61.3323],
+			[9.28483, -59.2752],
+			[8.37523, -59.5095],
+			[7.94631, -52.9824],
+			[8.15887, -47.3366],
+			[8.74506, -54.7088],
+			[9.28483, -59.2752]
+		],
+		[
+			[10.71595, -64.3945],
+			[11.10901, -62.4241],
+			[11.14278, -61.9472],
+			[11.21001, -60.3176],
+			[11.14317, -58.975],
+			[10.89157, -58.8532],
+			[10.53374, -61.6853]
+		],
+		[
+			[1.90659, 63.6701],
+			[1.43027, 60.2353],
+			[.94515, 60.7167],
+			[.67512, 56.5373],
+			[.15297, 59.1498]
+		],
+		[
+			[11.35011, -54.491],
+			[12.13931, -50.7224],
+			[12.46733, -50.2306],
+			[12.69195, -48.9599],
+			[13.66479, -53.4664],
+			[13.92566, -47.2884],
+			[13.82694, -42.4737],
+			[13.82508, -41.6877],
+			[14.11137, -36.37],
+			[14.59179, -42.1578],
+			[14.98603, -42.1042]
+		],
+		[[13.82508, -41.6877], [13.34328, -36.7123]],
+		[
+			[14.65975, -60.8372],
+			[13.66479, -53.4664],
+			[14.06373, -60.373]
+		],
+		[
+			[12.46733, -50.2306],
+			[12.1942, -52.3685],
+			[11.52947, -59.4421]
+		],
+		[
+			[20.49303, 62.9941],
+			[20.75483, 61.8388],
+			[21.30966, 62.5856],
+			[21.72513, 58.78],
+			[22.25061, 57.0436],
+			[22.18091, 58.2013],
+			[22.48619, 58.4152],
+			[22.82801, 66.2004],
+			[23.65579, 77.6323],
+			[21.47767, 70.5607],
+			[21.30966, 62.5856]
+		],
+		[[21.47767, 70.5607], [22.82801, 66.2004]],
+		[
+			[2.72168, 3.2358],
+			[2.59791, 5.5932],
+			[2.46932, 8.4601],
+			[2.74904, 10.1141],
+			[2.99525, 8.9074],
+			[3.03799, 4.0897],
+			[2.72168, 3.2358],
+			[2.65805, .3285],
+			[2.32244, -2.9776],
+			[1.85767, -10.335],
+			[1.73447, -15.9375],
+			[.72649, -17.9866],
+			[.3238, -8.8239],
+			[1.14317, -10.1823],
+			[1.40039, -8.1833],
+			[1.85767, -10.335]
+		],
+		[
+			[8.30877, -76.9197],
+			[10.59114, -78.6078],
+			[10.75453, -80.4696],
+			[12.30579, -79.3122],
+			[11.99377, -78.2218],
+			[10.59114, -78.6078]
+		],
+		[
+			[15.2919, -58.8012],
+			[14.70845, -64.9751],
+			[15.38963, -59.3208]
+		],
+		[
+			[6.36857, -33.4364],
+			[5.84933, -35.7683],
+			[5.66081, -34.0741],
+			[5.52021, -35.4705]
+		],
+		[[5.84933, -35.7683], [5.98578, -42.8151]],
+		[
+			[13.16647, 17.5294],
+			[13.19789, 27.8782],
+			[12.44897, 28.2684]
+		],
+		[
+			[18.97871, -37.1074],
+			[19.10697, -37.0634],
+			[19.15787, -37.9045],
+			[19.16715, -39.3408],
+			[19.13916, -40.4967],
+			[19.05191, -42.0951],
+			[18.82639, -43.4341],
+			[18.55839, -42.3125]
+		],
+		[
+			[15.54883, 31.3591],
+			[15.46381, 29.1057],
+			[15.57813, 26.7147],
+			[15.71238, 26.2956],
+			[15.82657, 26.0684],
+			[15.95979, 26.8779],
+			[16.02405, 29.8511]
+		],
+		[
+			[12.14023, -24.7289],
+			[12.16875, -22.6198],
+			[12.26343, -17.5419],
+			[12.49774, -16.5154],
+			[12.57312, -23.3968],
+			[12.16875, -22.6198]
+		],
+		[
+			[11.61137, -9.8022],
+			[11.41017, -10.8593],
+			[11.32235, -14.7785],
+			[10.99624, -18.2988],
+			[11.1943, -22.8258],
+			[11.38941, -18.78],
+			[11.4147, -17.684],
+			[11.74605, -18.3507],
+			[11.9336, -17.1508]
+		],
+		[[11.32235, -14.7785], [11.4147, -17.684]],
+		[[12.79535, -59.6888], [12.25242, -58.7489]],
+		[[12.44331, -63.0991], [12.51943, -57.1132]],
+		[
+			[21.21561, 30.2269],
+			[20.77019, 33.9703],
+			[20.37047, 40.2567],
+			[19.74958, 45.1308],
+			[19.4951, 51.7298],
+			[19.28505, 53.3685]
+		],
+		[
+			[20.69053, 45.2803],
+			[20.37047, 40.2567],
+			[19.93843, 35.0834],
+			[19.51202, 27.9597]
+		],
+		[
+			[20.55355, 11.3033],
+			[20.62582, 14.5951],
+			[20.66063, 15.9121],
+			[20.77746, 16.1241],
+			[20.72431, 15.0746],
+			[20.62582, 14.5951]
+		],
+		[
+			[4.26711, -51.4866],
+			[4.56661, -55.045],
+			[5.56042, -62.4898],
+			[5.74621, -65.7355],
+			[5.90168, -63.0896],
+			[5.56042, -62.4898],
+			[5.09185, -57.4727],
+			[4.56661, -55.045]
+		],
+		[
+			[17.89215, 56.8726],
+			[17.94343, 51.4889],
+			[17.50721, 52.3014],
+			[17.53779, 55.173],
+			[17.89215, 56.8726],
+			[19.20925, 67.6615],
+			[18.34595, 71.3378],
+			[17.14644, 65.7147],
+			[16.39986, 61.5142],
+			[16.03149, 58.5653],
+			[15.41549, 58.9661],
+			[14.07315, 64.3759],
+			[12.55804, 69.7882],
+			[11.52339, 69.3311]
+		],
+		[[18.34595, 71.3378], [18.35094, 72.7328]],
+		[[19.20925, 67.6615], [19.80287, 70.2679]],
+		[
+			[21.26373, 5.2478],
+			[21.24134, 10.007],
+			[21.17236, 10.1316]
+		],
+		[
+			[5.13083, -5.0864],
+			[4.75837, -3.2547],
+			[4.60532, -3.3525],
+			[4.19776, -6.8376],
+			[3.96716, -13.5085],
+			[3.76904, -12.1016],
+			[3.72081, -9.7634],
+			[3.54885, -9.4583],
+			[2.94046, -8.8981],
+			[2.73537, -13.8587],
+			[2.75172, -18.5726],
+			[3.03986, -23.6245],
+			[3.32528, -21.7579],
+			[3.56313, -21.6329],
+			[3.7808, -23.2497],
+			[4.59251, -30.5623],
+			[4.40061, -34.0168],
+			[4.29824, -33.7983],
+			[3.82423, -36.2003],
+			[3.61825, -40.2745],
+			[3.33213, -43.0698],
+			[2.97102, -40.3047],
+			[2.67779, -39.8554],
+			[2.44975, -47.7038],
+			[2.27516, -51.5122],
+			[1.93263, -51.6089],
+			[1.62857, -57.2368]
+		],
+		[
+			[3.20126, -28.9876],
+			[2.81817, -32.4059],
+			[2.07485, -29.2968]
+		],
+		[
+			[6.24796, 22.5068],
+			[6.38267, 22.5136],
+			[6.7322, 25.1311],
+			[7.18566, 30.2452],
+			[7.57663, 31.8883],
+			[7.75527, 28.0262],
+			[7.59871, 26.8957],
+			[7.33538, 21.9823],
+			[7.06848, 20.5703],
+			[6.62853, 16.3993],
+			[6.75483, 12.8956]
+		],
+		[[7.33538, 21.9823], [7.30155, 16.5404]],
+		[
+			[23.01467, -52.7541],
+			[22.80925, -51.3169],
+			[22.71113, -46.8846],
+			[22.49595, -43.7492],
+			[22.13722, -46.961],
+			[22.71113, -46.8846]
+		],
+		[
+			[22.48783, -43.4956],
+			[22.26025, -41.3467],
+			[22.10191, -39.5434],
+			[21.89881, -37.3649]
+		],
+		[
+			[16.36534, 19.1531],
+			[16.50367, 21.4896],
+			[16.6881, 31.6027],
+			[16.71493, 38.9223],
+			[16.56839, 42.437],
+			[16.32901, 46.3134],
+			[16.14616, 44.9349],
+			[15.87793, 42.4515]
+		],
+		[[16.6881, 31.6027], [17.00483, 30.9264]],
+		[[16.71493, 38.9223], [17.25079, 36.8092]],
+		[
+			[17.93755, 37.2505],
+			[17.39471, 37.1459],
+			[17.25079, 36.8092],
+			[17.00483, 30.9264],
+			[17.25053, 24.8392],
+			[17.77431, 27.7207],
+			[17.96275, 29.2479],
+			[18.12571, 28.7625]
+		],
+		[[17.24413, 14.3903], [16.50367, 21.4896]],
+		[
+			[4.23337, -42.2944],
+			[2.70929, -50.8003],
+			[2.62343, -52.5431],
+			[2.67767, -54.5499],
+			[3.06023, -59.7378],
+			[2.97995, -64.0713]
+		],
+		[
+			[8.77959, 6.4188],
+			[8.80721, 5.8378],
+			[8.72041, 3.3987],
+			[8.64595, 3.3414],
+			[8.6276, 5.7038],
+			[8.77959, 6.4188],
+			[8.92323, 5.9456],
+			[9.23941, 2.3143],
+			[9.66427, -1.1428],
+			[9.45979, -8.6586],
+			[9.85797, -14.8466],
+			[10.17647, -12.3541],
+			[10.43484, -16.8363],
+			[10.82708, -16.1936],
+			[11.55003, -31.8576],
+			[11.88181, -33.9081],
+			[13.31536, -23.1715],
+			[14.10619, -26.6824],
+			[14.83814, -27.9604]
+		],
+		[
+			[.42919, -77.2542],
+			[3.78732, -74.239],
+			[2.65982, -68.2669],
+			[2.36249, -68.6594],
+			[1.91559, -67.6473],
+			[1.9795, -61.5699]
+		],
+		[
+			[20.62612, -47.2915],
+			[20.73398, -51.921],
+			[20.9135, -58.4542],
+			[21.9653, -54.9926],
+			[21.33111, -53.4494],
+			[20.62612, -47.2915]
+		],
+		[
+			[22.39267, 52.229],
+			[22.52153, 50.2825],
+			[22.49217, 47.7069],
+			[22.35043, 46.5366],
+			[22.50813, 43.1234],
+			[22.67524, 44.2763],
+			[22.49217, 47.7069],
+			[22.40861, 49.4764],
+			[22.39267, 52.229]
+		],
+		[
+			[22.50813, 43.1234],
+			[22.23131, 39.7149],
+			[22.26616, 37.7487]
+		],
+		[
+			[10.13953, 11.9672],
+			[10.12221, 16.7627],
+			[10.33287, 19.8415],
+			[11.23514, 20.5237],
+			[11.81766, 14.5721],
+			[11.23733, 15.4296],
+			[10.13953, 11.9672]
+		],
+		[
+			[10.33287, 19.8415],
+			[10.27817, 23.4173],
+			[9.87939, 26.007],
+			[9.76419, 23.7743]
+		],
+		[
+			[10.12382, 35.2447],
+			[10.43189, 33.7961],
+			[10.88853, 34.2149],
+			[10.46472, 36.7072],
+			[10.12382, 35.2447],
+			[9.57039, 36.3976]
+		],
+		[
+			[6.10259, -14.9353],
+			[5.94008, -14.1677],
+			[5.78259, -14.822],
+			[5.54551, -17.8223],
+			[5.21553, -16.2055],
+			[5.09102, -22.371],
+			[5.47075, -20.7594],
+			[5.74105, -22.4484],
+			[5.85536, -20.8791]
+		],
+		[
+			[5.22052, -12.9413],
+			[5.21553, -16.2055],
+			[5.32626, -13.1768]
+		],
+		[
+			[15.06784, -25.282],
+			[14.84797, -16.0418],
+			[15.28345, -9.3829],
+			[15.59211, -14.7895],
+			[15.61707, -28.1351],
+			[15.64427, -29.7778]
+		],
+		[[14.84797, -16.0418], [15.59211, -14.7895]],
+		[
+			[15.84931, -33.6272],
+			[15.66277, -34.4119],
+			[15.36343, -36.2614],
+			[15.3562, -40.6475],
+			[14.97553, -43.134],
+			[14.69882, -47.3882],
+			[15.20475, -52.0992],
+			[15.30889, -47.8753],
+			[15.37802, -44.6896],
+			[15.58568, -41.1668],
+			[16.00203, -38.3967],
+			[16.10987, -36.8023]
+		],
+		[[15.3562, -40.6475], [15.58568, -41.1668]],
+		[
+			[6.32705, 59.011],
+			[6.95461, 58.4228],
+			[7.44523, 49.2115],
+			[8.38059, 43.1881],
+			[9.01066, 41.7829],
+			[9.31407, 36.8026],
+			[9.35092, 34.3926]
+		],
+		[
+			[18.74621, 37.6051],
+			[18.73966, 39.6127],
+			[18.61565, 38.7837],
+			[18.74621, 37.6051],
+			[18.90841, 36.8986],
+			[18.98239, 32.6896],
+			[18.83467, 33.3627],
+			[18.74621, 37.6051]
+		],
+		[
+			[6.17069, -74.753],
+			[5.53139, -76.341],
+			[4.91978, -74.9369],
+			[5.04528, -71.3143]
+		],
+		[
+			[20.8328, -33.7797],
+			[20.80809, -43.9885],
+			[21.34601, -40.8095],
+			[21.29897, -32.1725],
+			[21.02152, -32.2578],
+			[20.8328, -33.7797]
+		],
+		[
+			[7.68745, -9.5511],
+			[8.14323, -2.9838],
+			[7.19774, -.4928],
+			[6.4803, -7.0331],
+			[6.24759, -6.2748]
+		],
+		[
+			[7.19774, -.4928],
+			[6.79768, 2.4122],
+			[6.39613, 4.5929],
+			[6.54839, 7.333],
+			[6.68296, 9.8958]
+		],
+		[
+			[11.76011, -66.7288],
+			[12.29285, -67.9607],
+			[12.61973, -69.1356],
+			[12.77133, -68.1081],
+			[13.03785, -71.5489],
+			[12.54111, -72.133],
+			[12.61973, -69.1356]
+		],
+		[
+			[16.10818, -45.1732],
+			[16.45307, -47.5548],
+			[16.33067, -50.1555],
+			[16.05358, -49.2297],
+			[16.10818, -45.1732]
+		],
+		[
+			[14.44867, -83.6679],
+			[22.76764, -81.3816],
+			[21.69129, -77.39],
+			[14.44867, -83.6679]
+		],
+		[
+			[17.98377, -9.7736],
+			[17.79821, 2.7073],
+			[17.72454, 4.5673],
+			[17.58224, 12.56],
+			[16.96114, 9.375],
+			[16.51523, 1.9839],
+			[16.23909, -3.6943],
+			[16.30536, -4.6925],
+			[16.61931, -10.5671],
+			[17.17297, -15.7249]
+		],
+		[
+			[16.96114, 9.375],
+			[16.61931, -10.5671],
+			[16.51899, -16.6127],
+			[16.4504, -18.4563],
+			[16.40172, -20.0373],
+			[16.42642, -23.4472]
+		],
+		[
+			[17.72454, 4.5673],
+			[17.17297, -15.7249],
+			[17.36683, -24.9995],
+			[17.45591, -29.867]
+		],
+		[
+			[6.1262, 14.7685],
+			[5.90639, 20.2762],
+			[6.06533, 20.1385],
+			[6.199, 14.2088],
+			[6.03972, 9.6473],
+			[5.91953, 7.4071],
+			[5.41885, 6.3497],
+			[4.91493, 10.1508]
+		],
+		[
+			[4.97581, 1.714],
+			[4.90419, 2.4407],
+			[4.85343, 5.6051],
+			[4.83067, 6.9613],
+			[4.84353, 8.9002],
+			[4.91493, 10.1508],
+			[4.93952, 13.5145],
+			[5.07615, 15.4041],
+			[5.16165, 15.5972]
+		],
+		[
+			[5.2423, -8.2016],
+			[5.40795, -2.3971],
+			[5.53345, -.2991],
+			[5.41885, 6.3497],
+			[5.58563, 9.9342],
+			[5.91953, 7.4071],
+			[5.67931, -1.9426],
+			[5.79594, -9.6696]
+		],
+		[
+			[5.67931, -1.9426],
+			[5.60356, -1.2019],
+			[5.53345, -.2991]
+		],
+		[
+			[20.42746, -56.7351],
+			[20.74931, -66.2032],
+			[20.14545, -66.1821],
+			[18.87029, -62.1876],
+			[18.38712, -61.4939],
+			[18.14301, -63.6686],
+			[17.76222, -64.7239],
+			[18.71726, -71.4281],
+			[20.00987, -72.9105],
+			[20.74931, -66.2032],
+			[21.44073, -65.3662]
+		],
+		[
+			[22.16646, 33.1782],
+			[22.71671, 30.2212],
+			[23.06291, 28.0828],
+			[.13979, 29.0904],
+			[.2206, 15.1836],
+			[23.07935, 15.2053],
+			[22.77822, 12.1729],
+			[22.69103, 10.8314],
+			[22.16999, 6.1979],
+			[21.73643, 9.875]
+		],
+		[
+			[23.07935, 15.2053],
+			[23.06291, 28.0828],
+			[22.83339, 24.6016],
+			[22.77552, 23.5657],
+			[22.11685, 25.3451],
+			[21.74409, 25.645]
+		],
+		[
+			[3.73865, 32.2882],
+			[3.9022, 31.8836],
+			[3.98275, 35.791],
+			[3.96423, 40.0102],
+			[3.75323, 42.5785],
+			[3.71542, 47.7876],
+			[3.60816, 48.1926],
+			[3.40538, 49.8612],
+			[3.07994, 53.5064],
+			[2.84495, 55.8955],
+			[2.90429, 52.7625],
+			[3.15111, 49.6133],
+			[3.15827, 44.8575],
+			[3.13615, 40.9556],
+			[3.18816, 39.6116],
+			[3.08627, 38.8403],
+			[2.97935, 39.6627],
+			[2.99441, 41.0329],
+			[3.13615, 40.9556]
+		],
+		[
+			[4.10973, 50.3513],
+			[4.24829, 48.4093],
+			[4.14436, 47.7125],
+			[3.71542, 47.7876]
+		],
+		[
+			[3.15111, 49.6133],
+			[2.73666, 49.2284],
+			[1.72768, 50.6887]
+		],
+		[
+			[.43807, -42.306],
+			[1.1014, -46.7184],
+			[1.47276, -43.3182],
+			[1.52086, -49.0727],
+			[1.13975, -55.2458],
+			[1.1014, -46.7184],
+			[.15685, -45.7474],
+			[.43807, -42.306]
+		],
+		[
+			[6.80318, -61.9414],
+			[5.83046, -56.1667],
+			[5.78808, -51.0665]
+		],
+		[
+			[1.22915, 24.5837],
+			[1.19435, 30.0896],
+			[1.32444, 27.2641],
+			[1.22915, 24.5837],
+			[1.19089, 21.0347],
+			[1.52473, 15.3458],
+			[1.75657, 9.1577],
+			[2.03412, 2.7638],
+			[1.8926, 3.1875],
+			[1.69053, 5.4876],
+			[1.50309, 6.1438],
+			[1.22886, 7.5754],
+			[1.04906, 7.8901],
+			[.81137, 7.5851],
+			[23.98853, 6.8633],
+			[23.66585, 5.6263],
+			[23.46614, 6.379],
+			[23.33905, 5.3813],
+			[23.28609, 3.2823],
+			[23.44887, 1.2556],
+			[23.70078, 1.78],
+			[23.7732, 3.4868],
+			[23.66585, 5.6263]
+		],
+		[[23.28609, 3.2823], [23.06461, 3.82]],
+		[
+			[22.67759, -27.0436],
+			[22.96085, -29.6222],
+			[22.93247, -32.5396],
+			[22.87543, -32.8755],
+			[22.52509, -32.3461],
+			[22.13973, -32.9885],
+			[21.74911, -33.0258],
+			[21.7956, -30.8983],
+			[22.13973, -32.9885],
+			[22.67759, -27.0436]
+		],
+		[
+			[6.62935, -43.1959],
+			[7.28571, -37.0975],
+			[7.58969, -28.3693],
+			[7.64719, -26.8038],
+			[7.82157, -24.8598],
+			[7.94765, -22.8801],
+			[8.12573, -24.3043],
+			[8.05973, -40.0031],
+			[8.15887, -47.3366]
+		],
+		[
+			[7.82157, -24.8598],
+			[7.80143, -25.9372],
+			[7.73013, -28.9548],
+			[7.58969, -28.3693]
+		],
+		[
+			[8.05973, -40.0031],
+			[8.66837, -35.3084],
+			[8.72654, -33.1864],
+			[8.8422, -27.7098]
+		],
+		[
+			[4.24041, -62.4739],
+			[4.27473, -59.3022],
+			[3.9791, -61.4002],
+			[3.73666, -64.8069],
+			[4.24041, -62.4739]
+		],
+		[
+			[19.66827, 18.0139],
+			[19.78979, 18.5343],
+			[19.97929, 19.4921]
+		],
+		[[19.68415, 17.476], [19.78979, 18.5343]],
+		[
+			[18.29379, -36.7617],
+			[18.40287, -34.3846],
+			[18.3499, -29.8281],
+			[18.46618, -25.4217],
+			[18.22939, -21.0588]
+		],
+		[
+			[19.37731, -44.459],
+			[19.39811, -40.6159],
+			[19.04353, -29.8801],
+			[18.76094, -26.9908],
+			[18.46618, -25.4217]
+		],
+		[
+			[19.92103, -41.8683],
+			[19.99561, -35.2763],
+			[19.93065, -26.2995],
+			[19.61179, -24.8836],
+			[19.42125, -24.5086],
+			[19.25901, -25.2567],
+			[18.92109, -26.2967],
+			[18.76094, -26.9908],
+			[18.3499, -29.8281],
+			[18.0968, -30.4241],
+			[18.40287, -34.3846],
+			[19.04353, -29.8801],
+			[19.11567, -27.6704],
+			[18.92109, -26.2967],
+			[19.07805, -21.7415],
+			[19.16273, -21.0236],
+			[19.29391, -18.9529],
+			[19.36121, -17.8472],
+			[19.36212, -15.955]
+		],
+		[
+			[19.07805, -21.7415],
+			[18.96217, -21.1067],
+			[18.90283, -22.7448],
+			[18.92109, -26.2967]
+		],
+		[
+			[15.98087, -26.1141],
+			[16.00556, -22.6217],
+			[16.09062, -19.8055]
+		],
+		[
+			[16.00556, -22.6217],
+			[16.35315, -25.5928],
+			[16.49013, -26.432],
+			[16.59804, -28.216],
+			[16.83606, -34.2932],
+			[16.86451, -38.0474],
+			[16.90973, -42.3613],
+			[17.20255, -43.2392],
+			[17.62198, -42.9978],
+			[17.79308, -40.127],
+			[17.70813, -39.03],
+			[17.56015, -37.1038]
+		],
+		[
+			[.97677, -29.3574],
+			[23.81543, -28.1303],
+			[23.31373, -32.532],
+			[23.54951, -37.8183]
+		],
+		[
+			[18.58679, -8.2441],
+			[18.78624, -4.7479],
+			[18.70456, -9.0525],
+			[18.48663, -14.5658],
+			[18.58679, -8.2441]
+		],
+		[
+			[15.76979, 15.4218],
+			[15.69251, 19.6704],
+			[15.81233, 18.1416],
+			[15.94089, 15.6616],
+			[15.76979, 15.4218],
+			[15.58004, 10.5389],
+			[15.7378, 6.4256],
+			[15.84693, 4.4777],
+			[16.23909, -3.6943]
+		],
+		[
+			[17.17297, -15.7249],
+			[17.62645, -15.3986],
+			[17.98377, -9.7736],
+			[18.05137, -8.1803],
+			[18.35517, -2.8988],
+			[18.93699, 4.2036]
+		],
+		[
+			[10.1323, -.3716],
+			[9.87512, -8.105],
+			[10.49131, -2.7391],
+			[10.50485, -.637]
+		],
+		[
+			[5.62741, 21.1425],
+			[4.59868, 16.5093],
+			[4.47771, 15.8709],
+			[4.32989, 15.6276],
+			[4.38225, 17.5425],
+			[4.47695, 19.1804],
+			[5.4382, 28.6075]
+		],
+		[
+			[4.32989, 15.6276],
+			[4.01134, 12.4903],
+			[3.45282, 9.7327],
+			[4.05261, 5.9893]
+		],
+		[
+			[3.45282, 9.7327],
+			[3.41355, 9.0289],
+			[3.61455, .4017]
+		],
+		[
+			[18.18715, -45.9544],
+			[18.44956, -45.9685],
+			[18.48051, -49.0706]
+		],
+		[
+			[1.88469, 29.5788],
+			[2.15906, 34.9873],
+			[2.28857, 33.8472],
+			[1.88469, 29.5788]
+		],
+		[
+			[16.81108, -69.0277],
+			[15.91905, -63.4307],
+			[15.31516, -68.6795],
+			[16.81108, -69.0277]
+		],
+		[
+			[22.30836, -60.2596],
+			[23.29049, -58.2357],
+			[.52574, -62.9582],
+			[.33452, -64.8748],
+			[23.99861, -65.5771],
+			[22.45555, -64.9664],
+			[22.30836, -60.2596]
+		],
+		[
+			[12.2571, 57.0326],
+			[11.06213, 61.751],
+			[11.03069, 56.3824],
+			[11.89718, 53.6948],
+			[12.2571, 57.0326],
+			[12.90049, 55.9598],
+			[13.39876, 54.9254],
+			[13.79235, 49.3133]
+		],
+		[
+			[11.89718, 53.6948],
+			[11.76751, 47.7794],
+			[11.30798, 33.0943],
+			[11.30312, 31.5308]
+		],
+		[
+			[11.76751, 47.7794],
+			[11.16106, 44.4985],
+			[10.37215, 41.4995]
+		],
+		[[11.16106, 44.4985], [10.28494, 42.9144]],
+		[
+			[11.06213, 61.751],
+			[9.52547, 63.0619],
+			[8.50441, 60.7182],
+			[9.84982, 59.0387],
+			[11.03069, 56.3824]
+		],
+		[
+			[11.03069, 56.3824],
+			[9.86843, 54.0643],
+			[9.54762, 51.6773],
+			[8.98679, 48.0418]
+		],
+		[[9.06043, 47.1565], [9.54762, 51.6773]],
+		[
+			[15.73431, 77.7945],
+			[16.29175, 75.7553],
+			[15.34547, 71.834],
+			[14.84509, 74.1555],
+			[15.73431, 77.7945],
+			[16.76618, 82.0373],
+			[17.53695, 86.5865],
+			[2.5303, 89.2641]
+		],
+		[
+			[8.74506, -54.7088],
+			[9.36856, -55.0107],
+			[9.94771, -54.5678],
+			[10.77949, -49.4203],
+			[10.2456, -42.1219],
+			[9.51167, -40.4668],
+			[9.13327, -43.4326],
+			[8.15887, -47.3366]
+		],
+		[
+			[11.76432, 6.5294],
+			[11.84492, 1.7647],
+			[12.33177, -.6668],
+			[12.69435, -1.4494],
+			[13.16583, -5.539],
+			[13.41988, -11.1613],
+			[14.26691, -6.0005],
+			[14.71767, -5.6582]
+		],
+		[
+			[13.03628, 10.9592],
+			[12.92673, 3.3975],
+			[12.69435, -1.4494]
+		],
+		[
+			[13.16583, -5.539],
+			[13.57822, -.5958],
+			[14.02744, 1.5445],
+			[14.77081, 1.8929]
+		],
+		[
+			[9.04077, -66.3961],
+			[8.42894, -66.1369],
+			[8.13217, -68.6171],
+			[7.28051, -67.9572],
+			[7.14579, -70.4989],
+			[8.13217, -68.6171],
+			[9.04077, -66.3961]
+		],
+		[
+			[19.27029, 21.3904],
+			[19.47843, 24.6649],
+			[19.89103, 24.0796],
+			[20.01835, 27.7536],
+			[20.26281, 27.8142]
+		]
+	]
+};
+var NAKED_EYE_PLANETS = [
+	{
+		body: Body.Mercury,
+		name: "Mercury"
+	},
+	{
+		body: Body.Venus,
+		name: "Venus"
+	},
+	{
+		body: Body.Mars,
+		name: "Mars"
+	},
+	{
+		body: Body.Jupiter,
+		name: "Jupiter"
+	},
+	{
+		body: Body.Saturn,
+		name: "Saturn"
+	}
+];
+function phaseName(angleDeg) {
+	const a = (angleDeg % 360 + 360) % 360;
+	if (a < 22.5 || a >= 337.5) return "new moon";
+	if (a < 67.5) return "waxing crescent";
+	if (a < 112.5) return "first quarter";
+	if (a < 157.5) return "waxing gibbous";
+	if (a < 202.5) return "full moon";
+	if (a < 247.5) return "waning gibbous";
+	if (a < 292.5) return "last quarter";
+	return "waning crescent";
+}
+/** Parts of an instant as wall-clock fields in a given IANA zone. */
+function zonedParts(date, timeZone) {
+	const fmt = new Intl.DateTimeFormat("en-US", {
+		timeZone,
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+		hour: "2-digit",
+		minute: "2-digit",
+		second: "2-digit",
+		hourCycle: "h23"
+	});
+	const bag = {};
+	for (const p of fmt.formatToParts(date)) if (p.type !== "literal") bag[p.type] = p.value;
+	return {
+		year: Number(bag.year),
+		month: Number(bag.month),
+		day: Number(bag.day),
+		hour: Number(bag.hour),
+		minute: Number(bag.minute),
+		second: Number(bag.second)
+	};
+}
+/**
+* Convert civil wall time in `timeZone` to a UTC Date.
+* One-step offset correction; good enough for keepsake charts.
+*/
+function civilTimeToUtc(year, month, day, hour, minute, timeZone) {
+	const utcGuess = Date.UTC(year, month - 1, day, hour, minute, 0);
+	try {
+		const parts = zonedParts(new Date(utcGuess), timeZone);
+		const asIfUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+		return new Date(utcGuess - (asIfUtc - utcGuess));
+	} catch {
+		return new Date(utcGuess);
+	}
+}
+/**
+* Horizon → chart coords.
+* Zenith at origin; horizon at r = 1.
+* North at top, east at left (viewer on their back, head north).
+* SVG y grows downward, so north uses negative y.
+*/
+function altAzToChart(alt, az) {
+	if (alt < 0) return null;
+	const r = (90 - alt) / 90;
+	const rad = az * Math.PI / 180;
+	return {
+		x: round3(-r * Math.sin(rad)),
+		y: round3(-r * Math.cos(rad))
+	};
+}
+function round3(n) {
+	return Math.round(n * 1e3) / 1e3;
+}
+function projectEquatorial(when, observer, raHours, decDeg) {
+	const hor = Horizon(when, observer, raHours, decDeg, "normal");
+	return altAzToChart(hor.altitude, hor.azimuth);
+}
+function formatTimeLabel(time, usedMidnight) {
+	if (usedMidnight) return null;
+	return time || null;
+}
+function computeStarMap(opts) {
+	const [y, m, d] = opts.date.split("-").map(Number);
+	const usedMidnight = !opts.time;
+	let hour = 0;
+	let minute = 0;
+	if (opts.time) {
+		const [hh, mm] = opts.time.split(":").map(Number);
+		if (!Number.isNaN(hh)) hour = hh;
+		if (!Number.isNaN(mm)) minute = mm;
+	}
+	const tz = opts.timeZone || "UTC";
+	const when = civilTimeToUtc(y, m, d, hour, minute, tz);
+	const observer = new Observer(opts.lat, opts.lon, 0);
+	const stars = [];
+	for (const [ra, dec, mag] of STAR_CATALOG.stars) {
+		const pt = projectEquatorial(when, observer, ra, dec);
+		if (!pt) continue;
+		stars.push({
+			x: pt.x,
+			y: pt.y,
+			mag
+		});
+	}
+	const lines = [];
+	for (const seg of STAR_CATALOG.lines) {
+		const projected = seg.map(([ra, dec]) => projectEquatorial(when, observer, ra, dec));
+		let run = [];
+		const flush = () => {
+			if (run.length >= 2) lines.push(run);
+			run = [];
+		};
+		for (const p of projected) {
+			if (!p) {
+				flush();
+				continue;
+			}
+			run.push([p.x, p.y]);
+		}
+		flush();
+	}
+	let moon = null;
+	try {
+		const eq = Equator(Body.Moon, when, observer, true, true);
+		const pt = projectEquatorial(when, observer, eq.ra, eq.dec);
+		if (pt) {
+			const illum = Illumination(Body.Moon, when);
+			moon = {
+				x: pt.x,
+				y: pt.y,
+				phase: phaseName(MoonPhase(when)),
+				illuminationPct: Math.round(illum.phase_fraction * 100)
+			};
+		}
+	} catch {
+		moon = null;
+	}
+	const planets = [];
+	for (const { body, name } of NAKED_EYE_PLANETS) try {
+		const eq = Equator(body, when, observer, true, true);
+		const pt = projectEquatorial(when, observer, eq.ra, eq.dec);
+		if (pt) planets.push({
+			name,
+			x: pt.x,
+			y: pt.y
+		});
+	} catch {}
+	return {
+		stars,
+		lines,
+		moon,
+		planets,
+		whenIso: when.toISOString(),
+		usedMidnight,
+		timeLabel: formatTimeLabel(opts.time || void 0, usedMidnight),
+		lat: opts.lat,
+		lon: opts.lon,
+		magLimit: STAR_CATALOG.magLimit,
+		source: STAR_CATALOG.source
 	};
 }
 // worker/story.ts
@@ -9085,10 +21760,20 @@ async function buildStory(opts) {
 			} : null,
 			prices: lookupPrices(y),
 			life: lifeNumbers(opts.date),
+			births: lookupBirths(y),
+			starmap: computeStarMap({
+				date: opts.date,
+				time: opts.time,
+				lat: city.lat,
+				lon: city.lon,
+				timeZone: city.timeZone
+			}),
 			star: lookupStar(age),
 			headlines,
 			twins,
 			market: lookupMarket(y),
+			film: lookupFilm(y),
+			leaders: lookupLeaders(y, city.country),
 			culture: {
 				...lookupCulture(y),
 				...birthMeta(opts.date)
@@ -9098,6 +21783,11 @@ async function buildStory(opts) {
 		sources: [
 			"Open-Meteo",
 			"Astronomy Engine",
+			"Yale Bright Star Catalogue (via d3-celestial)",
+			"IAU constellation figures",
+			"UN World Population Prospects 2024 (via Our World in Data)",
+			"Box Office Mojo Domestic Yearly Box Office",
+			"Wikidata / curated national leadership timelines",
 			"Billboard Hot 100 (bundled chart dates)",
 			"US price/CPI snapshots",
 			"Wikipedia On This Day",
@@ -9173,7 +21863,7 @@ app.all("*", async (c) => {
 // \0virtual:cloudflare/worker-entry
 var worker_entry_default = app ?? {};
 
-const __CDN_BASE__ = "https://cdn.jsdelivr.net/gh/mohammadusman666/bornhere@804fa24f3ba94c930cc9dc733678d2465871afa0/deploy-artifacts/client";
+const __CDN_BASE__ = "https://cdn.jsdelivr.net/gh/mohammadusman666/bornhere@c2b8a73e24c0fbd40b8976e32ed2349f285a01e2/deploy-artifacts/client";
 const __app__ = worker_entry_default;
 function __ctype__(pathname) {
   if (pathname.endsWith('.html') || pathname === '/' || pathname === '') return 'text/html; charset=utf-8';
