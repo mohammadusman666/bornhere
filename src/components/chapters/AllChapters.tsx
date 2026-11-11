@@ -1,6 +1,7 @@
 import { formatMoney, formatNumber } from '../../lib/format'
 import type { StoryPayload } from '../../lib/types'
 import { ChapterShell } from '../ChapterShell'
+import { StarMapChart } from '../StarMapChart'
 
 export function AllChapters({ story }: { story: StoryPayload }) {
   const { chapters: c, name, ageYears } = story
@@ -19,6 +20,15 @@ export function AllChapters({ story }: { story: StoryPayload }) {
           Computed for {story.city.label}
           {story.time ? ` at ${story.time}` : ' (noon local used for the moon)'}.
         </p>
+      </ChapterShell>
+
+      <ChapterShell id="starmap">
+        <StarMapChart
+          map={c.starmap}
+          name={story.name}
+          date={story.date}
+          cityLabel={story.city.label}
+        />
       </ChapterShell>
 
       <ChapterShell id="weather">
@@ -322,6 +332,15 @@ function Certificate({ story }: { story: StoryPayload }) {
         {story.date}
         {story.time ? ` · ${story.time}` : ''}
       </p>
+      <div className="mx-auto mt-6 max-w-sm">
+        <StarMapChart
+          map={c.starmap}
+          name={story.name}
+          date={story.date}
+          cityLabel={story.city.label}
+          compact
+        />
+      </div>
       <div className="mx-auto mt-6 grid max-w-md gap-2 text-sm text-[var(--color-cream)]/90">
         <p>The sky: {c.sky.moonPhase}, {c.sky.illuminationPct}% lit</p>
         {c.song && (
