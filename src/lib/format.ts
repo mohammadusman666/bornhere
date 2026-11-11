@@ -84,11 +84,21 @@ export function buildStoryPath(opts: {
   city: string
   name?: string
   time?: string
+  gift?: boolean
+  from?: string
+  noteEncoded?: string
+  deliverOn?: string
+  unlocked?: boolean
 }) {
   const city = encodeURIComponent(slugifyCity(opts.city))
   const params = new URLSearchParams()
   if (opts.name?.trim()) params.set('n', opts.name.trim())
   if (opts.time?.trim()) params.set('t', opts.time.trim())
+  if (opts.gift) params.set('gift', '1')
+  if (opts.from?.trim()) params.set('from', opts.from.trim())
+  if (opts.noteEncoded) params.set('note', opts.noteEncoded)
+  if (opts.deliverOn?.trim()) params.set('on', opts.deliverOn.trim())
+  if (opts.unlocked) params.set('u', '1')
   const qs = params.toString()
   return `/story/${opts.date}/${city}${qs ? `?${qs}` : ''}`
 }

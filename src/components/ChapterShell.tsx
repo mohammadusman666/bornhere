@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
 import { getChapter, isChapterLocked, type ChapterId } from '../lib/chapters'
+import { useUnlock } from '../lib/UnlockContext'
 import { SealedChapterCard } from './SealedChapterCard'
 
 type Props = {
@@ -13,11 +14,13 @@ type Props = {
 
 export function ChapterShell({
   id,
-  unlocked = false,
+  unlocked: unlockedProp,
   teaserLine,
   sealedPreview,
   children,
 }: Props) {
+  const { unlocked: unlockedCtx } = useUnlock()
+  const unlocked = unlockedProp ?? unlockedCtx
   const chapter = getChapter(id)
   if (isChapterLocked(id, unlocked)) {
     return (

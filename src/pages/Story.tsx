@@ -1,8 +1,12 @@
 import { motion } from 'framer-motion'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { AllChapters } from '../components/chapters/AllChapters'
+import { GiftLetter } from '../components/GiftLetter'
+import { KeepsakePanel } from '../components/KeepsakePanel'
+import { readGiftFromSearch, unlockStorageKey } from '../lib/gift'
 import { formatLongDate } from '../lib/format'
+import { UnlockProvider } from '../lib/UnlockContext'
 import type { StoryPayload } from '../lib/types'
 
 const LOADING_LINES = [
@@ -15,9 +19,21 @@ const LOADING_LINES = [
 
 export function Story() {
   const { date = '', city = '' } = useParams()
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
   const name = params.get('n') || ''
   const time = params.get('t') || ''
+  const gift = useMemo(() => readGiftFromSearch(params), [params])
+  const cityKey = decodeURIComponent(city)
+
+  const storageKey = useMemo(
+    () => unlockStorageKey(date, cityKey, name),
+    [date, cityKey, name],
+  )
+
+  const initialUnlocked =
+    params.get('u') === '1' ||
+    Boolean(gift) ||
+    (typeof window !== 'undefined' && window.localStorage.getItem(storageKey) === '1')
 
   const [story, setStory] = useState<StoryPayload | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -63,11 +79,24 @@ export function Story() {
   useEffect(() => {
     if (!story) return
     const titleName = story.name || 'Someone'
-    document.title = `${titleName} — Arriveday · ${formatLongDate(story.date)}`
+    document.title = gift
+      ? `A gift for ${titleName} — Arriveday`
+      : `${titleName} — Arriveday · ${formatLongDate(story.date)}`
     const og = document.querySelector('meta[property="og:image"]')
     const url = `/api/og?n=${encodeURIComponent(titleName)}&d=${encodeURIComponent(formatLongDate(story.date))}&c=${encodeURIComponent(story.city.label)}`
     if (og) og.setAttribute('content', url)
-  }, [story])
+  }, [story, gift])
+
+  const persistUnlock = useCallback(() => {
+    try {
+      window.localStorage.setItem(storageKey, '1')
+    } catch {
+      // ignore
+    }
+    const next = new URLSearchParams(params)
+    next.set('u', '1')
+    setParams(next, { replace: true })
+  }, [params, setParams, storageKey])
 
   async function copyLink() {
     try {
@@ -82,17 +111,25 @@ export function Story() {
   return (
     <div className="sky-gradient relative min-h-screen">
       <div className="paper-noise pointer-events-none absolute inset-0 opacity-35" />
-      <header className="no-print relative z-10 mx-auto flex w-full max-w-5xl items-center justify-between px-4 pt-5">
+      <header className="no-print relative z-10 mx-auto flex w-full max-w-5xl items-center justify-between gap-3 px-4 pt-5">
         <Link to="/" className="font-display text-xl">
           Arrive<span className="text-[var(--color-amber)]">day</span>
         </Link>
-        <button
-          type="button"
-          onClick={copyLink}
-          className="rounded-full border border-[var(--color-line)] px-3.5 py-1.5 text-sm text-[var(--color-amber-soft)]"
-        >
-          {copied ? 'Link copied' : 'Copy share link'}
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/gift"
+            className="rounded-full border border-[var(--color-line)] px-3.5 py-1.5 text-sm text-[var(--color-mist)]"
+          >
+            Gift a day
+          </Link>
+          <button
+            type="button"
+            onClick={copyLink}
+            className="rounded-full border border-[var(--color-line)] px-3.5 py-1.5 text-sm text-[var(--color-amber-soft)]"
+          >
+            {copied ? 'Link copied' : 'Copy share link'}
+          </button>
+        </div>
       </header>
 
       {!story && !error && (
@@ -116,7 +153,11 @@ export function Story() {
       )}
 
       {story && (
-        <>
+        <UnlockProvider
+            key={storageKey}
+            initialUnlocked={initialUnlocked}
+            onUnlock={persistUnlock}
+          >
           <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
@@ -134,16 +175,30 @@ export function Story() {
               {story.chapters.sky.moonPhase} · {story.chapters.sky.illuminationPct}% illuminated
             </p>
             <p className="mt-6 text-[var(--color-mist)]">
-              Your story, and the world you arrived into.
+              {gift
+                ? 'A time capsule, opened for them — with your note.'
+                : 'Your story, and the world you arrived into.'}
             </p>
           </motion.div>
+
+          {gift && (
+            <div className="relative z-10 px-4">
+              <GiftLetter gift={gift} recipient={story.name || 'you'} />
+            </div>
+          )}
+
           <div className="relative z-10">
             <AllChapters story={story} />
           </div>
+
+          <div className="relative z-10 px-4 pb-10 pt-2">
+            <KeepsakePanel mode={gift ? 'gift' : 'self'} />
+          </div>
+
           <footer className="no-print relative z-10 px-4 pb-16 text-center text-xs text-[var(--color-mist)]">
             Sources include {story.sources.join(', ')}. Missing records stay missing.
           </footer>
-        </>
+        </UnlockProvider>
       )}
     </div>
   )

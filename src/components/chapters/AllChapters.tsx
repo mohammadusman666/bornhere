@@ -1,4 +1,5 @@
 import { formatMoney, formatNumber } from '../../lib/format'
+import { useUnlock } from '../../lib/UnlockContext'
 import type { StoryPayload } from '../../lib/types'
 import { ChapterShell } from '../ChapterShell'
 import { StarMapChart } from '../StarMapChart'
@@ -460,15 +461,38 @@ function Certificate({ story }: { story: StoryPayload }) {
           </p>
         )}
       </div>
-      <div className="no-print mt-6 flex justify-center">
-        <button
-          type="button"
-          onClick={() => window.print()}
-          className="rounded-full bg-[var(--color-amber)] px-5 py-2 text-sm font-medium text-[var(--color-ink)]"
-        >
-          Print certificate
-        </button>
-      </div>
+      <CertificateActions />
+    </div>
+  )
+}
+
+function CertificateActions() {
+  const { unlocked, unlock } = useUnlock()
+  return (
+    <div className="no-print mt-6 flex flex-col items-center gap-3">
+      <button
+        type="button"
+        onClick={() => window.print()}
+        className="rounded-full bg-[var(--color-amber)] px-5 py-2 text-sm font-medium text-[var(--color-ink)]"
+      >
+        Print certificate
+      </button>
+      {!unlocked ? (
+        <p className="max-w-sm text-center text-xs text-[var(--color-mist)]">
+          Preview print works now. Unlock the keepsake for sealed chapters + print-ready story
+          depth —{' '}
+          <a href="#keepsake" className="text-[var(--color-amber-soft)] underline-offset-2 hover:underline">
+            see keepsake
+          </a>{' '}
+          or{' '}
+          <button type="button" onClick={unlock} className="text-[var(--color-amber-soft)] underline-offset-2 hover:underline">
+            preview unlock
+          </button>
+          .
+        </p>
+      ) : (
+        <p className="text-xs text-[var(--color-amber-soft)]">Keepsake unlocked on this device</p>
+      )}
     </div>
   )
 }
